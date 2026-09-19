@@ -3,7 +3,10 @@ name: Auto Unzip Diagnostic Patch
 on:
   push:
     paths:
-      - 'cloudstream-diagnostic-patch.zip'
+      - '*.zip'
+      - '**/*.zip'
+      - '*.ZIP'
+      - '**/*.ZIP'
       - '.github/workflows/auto-unzip.yml'
   workflow_dispatch:
 
@@ -19,38 +22,49 @@ jobs:
     if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout latest branch
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref_name }}
           persist-credentials: true
 
-      - name: Extract patch into repository root
+      - name: Unzip all ZIPs and delete each only after success
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -f cloudstream-diagnostic-patch.zip ]]; then
-            echo 'Patch ZIP not found; nothing to unzip.'
-            exit 0
-          fi
-          # Reject absolute paths, parent traversal and Windows-style separators.
           python3 - <<'PY'
-          from pathlib import PurePosixPath
+          from pathlib import Path, PurePosixPath
           from zipfile import ZipFile
-          archive = 'cloudstream-diagnostic-patch.zip'
-          with ZipFile(archive) as z:
-              for item in z.infolist():
-                  name = item.filename
-                  parts = PurePosixPath(name).parts
-                  if (not name or name.startswith('/') or '\\' in name
-                          or '..' in parts or '.git' in parts or name.startswith('.github/workflows/')
-                          or (item.external_attr >> 16) & 0o170000 == 0o120000):
-                      raise SystemExit(f'Unsafe archive entry: {name!r}')
-          PY
-          unzip -o -q cloudstream-diagnostic-patch.zip -d .
-          # Only delete the archive after unzip exits successfully.
-          rm -- cloudstream-diagnostic-patch.zip
 
-      - name: Commit extracted files
+          root = Path.cwd()
+          archives = sorted(
+              path for path in root.rglob('*')
+              if path.is_file() and path.suffix.lower() == '.zip'
+              and not any(part in {'.git', '.gradle', 'build'} for part in path.relative_to(root).parts)
+          )
+          if not archives:
+              print('No ZIP files to extract.')
+
+          for archive in archives:
+              print(f'Extracting: {archive.relative_to(root)}', flush=True)
+              with ZipFile(archive) as zip_file:
+                  # Check all archive members before writing anything.
+                  for item in zip_file.infolist():
+                      name = item.filename
+                      parts = PurePosixPath(name).parts
+                      mode = (item.external_attr >> 16) & 0o170000
+                      if (not name or name.startswith('/') or '\\' in name
+                          or '..' in parts or '.git' in parts
+                          or mode == 0o120000
+                          or name.startswith('.github/workflows/')):
+                          raise ValueError(f'Unsafe ZIP entry in {archive.name}: {name!r}')
+                  zip_file.extractall(root)
+              # Reached only after successful extraction.
+              archive.unlink()
+              print(f'Extracted and deleted: {archive.relative_to(root)}', flush=True)
+          PY
+
+      - name: Commit extracted files and ZIP deletions
         shell: bash
         run: |
           set -euo pipefail
@@ -58,8 +72,8 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           if git diff --cached --quiet; then
-            echo 'No extracted changes to commit.'
+            echo 'No changes to commit.'
             exit 0
           fi
-          git commit -m 'Apply CloudStream diagnostic patch'
+          git commit -m 'Auto unzip uploaded ZIP files'
           git push origin "HEAD:${GITHUB_REF_NAME}"
