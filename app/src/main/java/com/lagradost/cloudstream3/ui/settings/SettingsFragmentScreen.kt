@@ -62,7 +62,6 @@ import com.lagradost.cloudstream3.BuildConfig
 import com.lagradost.cloudstream3.CommonActivity.activity
 import com.lagradost.cloudstream3.R
 import com.lagradost.cloudstream3.utils.DataStoreHelper
-import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticDialog
 import com.lagradost.cloudstream3.utils.DataStoreHelper.profileImages
 import com.lagradost.cloudstream3.utils.GitInfo.currentCommitHash
 import com.lagradost.cloudstream3.utils.UIHelper.clipboardHelper
@@ -269,14 +268,6 @@ object SettingsFragmentScreen : Screen {
                             screens.forEach { settingsTab ->
                                 SettingsTab(settingsTab)
                             }
-                            // Keep Diagnostic directly below Extensions if Compose UI is enabled.
-                            val diagnosticContext = LocalContext.current
-                            TextPreferenceWidget(
-                                title = "Diagnostic",
-                                subtitle = "View, copy or clear provider and playback events",
-                                icon = painterResource(R.drawable.baseline_description_24),
-                                onPreferenceClick = { DiagnosticDialog.show(diagnosticContext) }
-                            )
                             BuildStamp()
                         }
                     })

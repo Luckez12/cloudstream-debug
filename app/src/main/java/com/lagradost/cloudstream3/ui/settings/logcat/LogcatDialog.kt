@@ -63,6 +63,7 @@ import java.util.Locale
 fun LogcatDialog(dismiss: () -> Unit) {
     val list = remember { mutableStateOf(persistentListOf<LogcatItem>()) }
     var isLoading by remember { mutableStateOf(true) }
+    var filtered by remember { mutableStateOf(true) }
     LaunchedEffect(dismiss) {
         try {
             isLoading = true
@@ -84,6 +85,9 @@ fun LogcatDialog(dismiss: () -> Unit) {
             isLoading = false
         }
     }
+    val visibleItems = if (filtered) list.value.filter {
+        ProviderLogcatFilter.keep(it.pid, android.os.Process.myPid(), it.tag, it.message)
+    } else list.value
     val (dismissFocus, confirmFocus) = remember { FocusRequester.createRefs() }
 
     val context = LocalContext.current
@@ -108,7 +112,7 @@ fun LogcatDialog(dismiss: () -> Unit) {
                     end = confirmFocus
                 }
             ) {
-                items(items = list.value) { item ->
+                items(items = visibleItems) { item ->
                     LogcatItem(item, modifier = Modifier.focusProperties {
                         start = dismissFocus
                         end = confirmFocus
@@ -117,6 +121,9 @@ fun LogcatDialog(dismiss: () -> Unit) {
             }
         },
         confirmButton = {
+            WhiteButton(text = if (filtered) "Filtered (${visibleItems.size}/${list.value.size})" else "Raw (${list.value.size})") {
+                filtered = !filtered
+            }
             WhiteButton(
                 text = stringResource(R.string.sort_save),
                 modifier = Modifier.focusRequester(confirmFocus)
@@ -137,8 +144,8 @@ fun LogcatDialog(dismiss: () -> Unit) {
                             ).openNew()
                             fileStream.bufferedWriter()
                                 .use { writer ->
-                                    list.value.forEach {
-                                        writer.write(it.toString())
+                                    visibleItems.forEach {
+                                        writer.write(ProviderLogcatFilter.forSharing(it.toString()))
                                         writer.write("\n\n")
                                     }
                                 }
@@ -162,8 +169,8 @@ fun LogcatDialog(dismiss: () -> Unit) {
 
                             stream.bufferedWriter()
                                 .use { writer ->
-                                    list.value.forEach {
-                                        writer.write(it.toString())
+                                    visibleItems.forEach {
+                                        writer.write(ProviderLogcatFilter.forSharing(it.toString()))
                                         writer.write("\n\n")
                                     }
                                 }
@@ -186,7 +193,7 @@ fun LogcatDialog(dismiss: () -> Unit) {
             WhiteButton(text = stringResource(R.string.sort_copy)) {
                 clipboardHelper(
                     txt("Logcat"),
-                    list.value.joinToString(separator = "\n\n") { it.toString() }
+                    ProviderLogcatFilter.forSharing(visibleItems.joinToString(separator = "\n\n") { it.toString() })
                 )
             }
             WhiteButton(text = stringResource(R.string.sort_clear)) {

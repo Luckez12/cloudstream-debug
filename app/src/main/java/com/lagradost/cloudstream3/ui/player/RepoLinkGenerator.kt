@@ -9,7 +9,6 @@ import com.lagradost.cloudstream3.ui.result.ResultEpisode
 import com.lagradost.cloudstream3.utils.AppContextUtils.html
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticLog
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -50,7 +49,6 @@ class RepoLinkGenerator(
         isCasting: Boolean,
     ): Boolean {
         val current = videos.getOrNull(offset) ?: return false
-        val diagnosticSession = DiagnosticLog.startPlayback(current.apiName)
 
         val currentCache = synchronized(cache) {
             cache[current.apiName to current.id] ?: Cache(
@@ -102,7 +100,6 @@ class RepoLinkGenerator(
             // this stops all execution if links are cached
             // no extra get requests
             if (currentCache.saturated) {
-                DiagnosticLog.event("LINK_CACHE", "PASS", "links=${currentCache.linkCache.size} subtitles=${currentCache.subtitleCache.size}", diagnosticSession)
                 return true
             }
         }
@@ -112,8 +109,8 @@ class RepoLinkGenerator(
         ).loadLinks(
             current.data,
             isCasting = isCasting,
-            diagnosticSession = diagnosticSession,
             subtitleCallback = { file ->
+                Log.d(TAG, "Loaded SubtitleFile: $file")
                 val correctFile = PlayerSubtitleHelper.getSubtitleData(file)
                 if (correctFile.url.isBlank() || !currentSubsUrls.add(correctFile.url)) {
                     return@loadLinks
@@ -136,6 +133,7 @@ class RepoLinkGenerator(
                 }
             },
             callback = { link ->
+                Log.d(TAG, "Loaded ExtractorLink: $link")
                 if (link.url.isBlank() || !currentLinksUrls.add(link.url)) {
                     return@loadLinks
                 }
@@ -156,11 +154,6 @@ class RepoLinkGenerator(
         synchronized(currentCache) {
             currentCache.saturated = currentCache.linkCache.isNotEmpty()
             currentCache.lastCachedTimestamp = unixTime
-            DiagnosticLog.event(
-                "LINK_FILTER", if (currentLinksUrls.isNotEmpty()) "PASS" else "FAIL",
-                "unique_links=${currentLinksUrls.size} cached=${currentCache.linkCache.size}",
-                diagnosticSession
-            )
         }
 
         return result

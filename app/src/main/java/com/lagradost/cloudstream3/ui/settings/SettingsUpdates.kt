@@ -156,19 +156,31 @@ class SettingsUpdates : BasePreferenceFragmentCompat() {
             val logList = mutableListOf<String>()
             try {
                 // https://developer.android.com/studio/command-line/logcat
-                val process = Runtime.getRuntime().exec("logcat -d")
+                val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "threadtime"))
                 val bufferedReader = BufferedReader(InputStreamReader(process.inputStream))
-                bufferedReader.lineSequence().forEach { logList.add(it) }
+                bufferedReader.use { reader -> reader.lineSequence().forEach { logList.add(it) } }
+                process.waitFor()
             } catch (e: Exception) {
                 logError(e) // kinda ironic
             }
 
-            val adapter = LogcatAdapter().apply { submitList(logList) }
+            // Filtered is for provider debugging; Raw preserves the original full Logcat.
+            val filteredList = com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter
+                .filterText(logList, android.os.Process.myPid())
+            var filtered = true
+            fun visibleLog(): List<String> = if (filtered) filteredList else logList
+            val adapter = LogcatAdapter().apply { submitList(visibleLog().toList()) }
+            binding.filterBtt.text = "Filtered (${filteredList.size}/${logList.size})"
+            binding.filterBtt.setOnClickListener {
+                filtered = !filtered
+                binding.filterBtt.text = if (filtered) "Filtered (${filteredList.size}/${logList.size})" else "Raw (${logList.size})"
+                adapter.submitList(visibleLog().toList())
+            }
             binding.logcatRecyclerView.layoutManager = LinearLayoutManager(pref.context)
             binding.logcatRecyclerView.adapter = adapter
 
             binding.copyBtt.setOnClickListener {
-                clipboardHelper(txt("Logcat"), logList.joinToString("\n"))
+                clipboardHelper(txt("Logcat"), com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter.forSharing(visibleLog().joinToString("\n")))
                 dialog.dismissSafe(activity)
             }
 
@@ -188,7 +200,7 @@ class SettingsUpdates : BasePreferenceFragmentCompat() {
                         "txt",
                         false
                     ).openNew()
-                    fileStream.writer().use { writer -> writer.write(logList.joinToString("\n")) }
+                    fileStream.writer().use { writer -> writer.write(com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter.forSharing(visibleLog().joinToString("\n"))) }
                     dialog.dismissSafe(activity)
                 } catch (t: Throwable) {
                     logError(t)

@@ -279,6 +279,7 @@ class SettingsGeneral : BasePreferenceFragmentCompat() {
         setPreferencesFromResource(R.xml.settings_general, rootKey)
         val settingsManager = PreferenceManager.getDefaultSharedPreferences(requireContext())
 
+
         getPref(R.string.locale_key)?.setOnPreferenceClickListener { pref ->
             val current = getCurrentLocale(pref.context)
             val languageTagsIETF = appLanguages.map { it.second }

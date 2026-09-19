@@ -27,7 +27,6 @@ import com.lagradost.cloudstream3.ui.settings.Globals.TV
 import com.lagradost.cloudstream3.ui.settings.Globals.isLandscape
 import com.lagradost.cloudstream3.ui.settings.Globals.isLayout
 import com.lagradost.cloudstream3.utils.DataStoreHelper
-import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticDialog
 import com.lagradost.cloudstream3.utils.GitInfo.currentCommitHash
 import com.lagradost.cloudstream3.utils.ImageLoader.loadImage
 import com.lagradost.cloudstream3.utils.UIHelper.clipboardHelper
@@ -240,15 +239,6 @@ class SettingsFragment : BaseFragment<MainSettingsBinding>(
                         isFocusableInTouchMode = true
                     }
                 }
-            }
-
-            // Diagnostic is a separate entry immediately below Extensions.
-            settingsDiagnostic.setOnClickListener {
-                DiagnosticDialog.show(requireContext())
-            }
-            if (isLayout(TV)) {
-                settingsDiagnostic.isFocusable = true
-                settingsDiagnostic.isFocusableInTouchMode = true
             }
 
             // Default focus on TV
