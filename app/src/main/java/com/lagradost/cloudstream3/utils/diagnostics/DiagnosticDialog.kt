@@ -6,7 +6,7 @@ import android.content.Context
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 
-/** Accessible from Settings > General in both legacy and Compose settings. */
+/** Accessible from the top-level Diagnostic entry below Extensions. */
 object DiagnosticDialog {
     fun show(context: Context) {
         val report = DiagnosticLog.report()

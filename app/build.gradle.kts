@@ -211,6 +211,17 @@ android {
         }
     }
 
+    // The arm64 APK contains only that CPU's native libraries; the universal APK
+    // remains available for other devices. Does not minify/obfuscate debug code.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = true
+        }
+    }
+
     namespace = "com.lagradost.cloudstream3"
 }
 

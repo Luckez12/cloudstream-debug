@@ -166,6 +166,7 @@ class CS3IPlayer : IPlayer {
     private var lastMuteVolume: Float = 1.0f
 
     private var currentLink: ExtractorLink? = null
+    private var playbackDiagnosticId: Long? = null
     private var currentDownloadedFile: ExtractorUri? = null
     private var hasUsedFirstRender = false
 
@@ -281,7 +282,7 @@ class CS3IPlayer : IPlayer {
         autoPlay: Boolean?,
         preview: Boolean,
     ) {
-        DiagnosticLog.event("PLAYER", "START", if (link != null) "online" else "offline")
+        playbackDiagnosticId = DiagnosticLog.playerStarted(link?.url, link?.type?.name ?: "OFFLINE")
         Log.i(TAG, "loadPlayer")
         if (sameEpisode) {
             saveData()
@@ -1387,6 +1388,8 @@ class CS3IPlayer : IPlayer {
         onlineSource: HttpDataSource.Factory? = null,
     ) {
         Log.i(TAG, "loadExo")
+        // Capture the attempt for this player instance; mirrors/retries may start a new one.
+        val diagnosticSession = playbackDiagnosticId
         val settingsManager = PreferenceManager.getDefaultSharedPreferences(context)
         val maxVideoHeight = settingsManager.getInt(
             context.getString(if (context.isUsingMobileData()) R.string.quality_pref_mobile_data_key else R.string.quality_pref_key),
@@ -1517,7 +1520,7 @@ class CS3IPlayer : IPlayer {
 
                     when (playbackState) {
                         Player.STATE_READY -> {
-                            DiagnosticLog.event("PLAYER", "PASS", "ready")
+                            DiagnosticLog.event("PLAYER", "PASS", "ready", diagnosticSession)
                             onRenderFirst()
                         }
 
@@ -1552,9 +1555,9 @@ class CS3IPlayer : IPlayer {
                     val httpCode = generateSequence<Throwable>(error) { it.cause }
                         .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
                         .firstOrNull()?.responseCode
-                    DiagnosticLog.error("PLAYBACK", error, code = httpCode ?: error.errorCode)
+                    DiagnosticLog.error("PLAYBACK", error, diagnosticSession, code = error.errorCode)
                     if (httpCode != null) {
-                        DiagnosticLog.event("HTTP", "FAIL", "status=$httpCode")
+                        DiagnosticLog.event("HTTP", "FAIL", "status=$httpCode", diagnosticSession)
                     }
                     // If the Network fails then ignore the exception if the duration is set.
                     // This is to switch mirrors automatically if the stream has not been fetched, but
@@ -1610,6 +1613,10 @@ class CS3IPlayer : IPlayer {
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     super.onPlaybackStateChanged(playbackState)
+                    when (playbackState) {
+                        Player.STATE_BUFFERING -> DiagnosticLog.event("PLAYER", "INFO", "buffering", diagnosticSession)
+                        Player.STATE_ENDED -> DiagnosticLog.event("PLAYER", "INFO", "ended", diagnosticSession)
+                    }
                     when (playbackState) {
                         Player.STATE_READY -> {
 
@@ -1724,6 +1731,7 @@ class CS3IPlayer : IPlayer {
             subtitleHelper.setActiveSubtitles(activeSubtitles.toSet())
             loadExo(context, listOf(MediaItemSlice(mediaItem, Long.MIN_VALUE)), subSources)
         } catch (t: Throwable) {
+            DiagnosticLog.error("PLAYER_SETUP", t, playbackDiagnosticId)
             Log.e(TAG, "loadOfflinePlayer error", t)
             event(ErrorEvent(t))
         }
@@ -1989,6 +1997,7 @@ class CS3IPlayer : IPlayer {
                 onlineSource = onlineSourceFactory
             )
         } catch (t: Throwable) {
+            DiagnosticLog.error("PLAYER_SETUP", t, playbackDiagnosticId)
             Log.e(TAG, "loadOnlinePlayer error", t)
             event(ErrorEvent(t))
         }

@@ -85,7 +85,7 @@ class APIRepository(val api: MainAPI) {
     val vpnStatus = api.vpnStatus
 
     suspend fun load(url: String): Resource<LoadResponse> {
-        val diagnosticId = DiagnosticLog.start(api.name)
+        val diagnosticId = DiagnosticLog.start(api.name, "metadata")
         val diagnosticStart = System.currentTimeMillis()
         val response = safeApiCall {
             withTimeout(getTimeout(api.loadTimeoutMs)) {
@@ -217,8 +217,9 @@ class APIRepository(val api: MainAPI) {
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
+        diagnosticSession: Long? = null,
     ): Boolean {
-        val diagnosticId = DiagnosticLog.start(api.name)
+        val diagnosticId = diagnosticSession ?: DiagnosticLog.start(api.name, "links")
         if (isInvalidData(data)) {
             DiagnosticLog.event("LINKS", "FAIL", "invalid_input", diagnosticId)
             return false // this makes providers cleaner
@@ -235,12 +236,16 @@ class APIRepository(val api: MainAPI) {
                         subtitleCallback(subtitle)
                     },
                     { link ->
-                        linkCount.incrementAndGet()
+                        if (linkCount.incrementAndGet() == 1) {
+                            // Output of provider/extractor is visible; extension internals are not.
+                            DiagnosticLog.event("EXTRACTOR_OUTPUT", "PASS", "format=${link.type.name}", diagnosticId)
+                        }
+                        DiagnosticLog.rememberLink(link.url, diagnosticId)
                         callback(link)
                     }
                 )
             }
-            val status = if (success && linkCount.get() > 0) "PASS" else "FAIL"
+            val status = if (linkCount.get() > 0) "PASS" else "FAIL"
             DiagnosticLog.event(
                 "LINKS", status,
                 "returned=$success links=${linkCount.get()} subtitles=${subtitleCount.get()} elapsed=${System.currentTimeMillis() - started}ms",
