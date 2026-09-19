@@ -29,7 +29,6 @@ import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.network.initClient
 import com.lagradost.cloudstream3.ui.settings.SettingsProvidersScreen.toStringRes
 import com.lagradost.cloudstream3.utils.BatteryOptimizationChecker.isAppRestricted
-import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticDialog
 import com.lagradost.cloudstream3.utils.BatteryOptimizationChecker.showRequestIgnoreBatteryOptDialog
 import com.lagradost.cloudstream3.utils.SubtitleHelper.fromTagToLanguageName
 import com.lagradost.cloudstream3.utils.SubtitleHelper.getNameNextToFlagEmoji
@@ -114,12 +113,6 @@ object SettingsGeneralScreen : SearchableSettings {
         }.sortedBy { fromTagToLanguageName(it) ?: it }
 
         return persistentListOf(
-            Preference.PreferenceItem.TextPreference(
-                title = "CloudStream Diagnostic",
-                subtitle = "View, copy or clear provider and playback events",
-                icon = painterResource(R.drawable.baseline_description_24),
-                onClick = { DiagnosticDialog.show(context) },
-            ),
             Preference.PreferenceGroup(title = stringResource(R.string.extension_language), preferenceItems = persistentListOf(
                 Preference.PreferenceItem.ListPreference(
                     preference = settings.general.locale,

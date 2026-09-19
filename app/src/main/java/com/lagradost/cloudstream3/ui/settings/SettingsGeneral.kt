@@ -39,7 +39,6 @@ import com.lagradost.cloudstream3.ui.settings.SettingsFragment.Companion.setTool
 import com.lagradost.cloudstream3.ui.settings.SettingsFragment.Companion.setUpToolbar
 import com.lagradost.cloudstream3.ui.settings.utils.getChooseFolderLauncher
 import com.lagradost.cloudstream3.utils.BatteryOptimizationChecker.isAppRestricted
-import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticDialog
 import com.lagradost.cloudstream3.utils.BatteryOptimizationChecker.showBatteryOptimizationDialog
 import com.lagradost.cloudstream3.utils.SingleSelectionHelper.showBottomDialog
 import com.lagradost.cloudstream3.utils.SingleSelectionHelper.showDialog
@@ -279,12 +278,6 @@ class SettingsGeneral : BasePreferenceFragmentCompat() {
         hideKeyboard()
         setPreferencesFromResource(R.xml.settings_general, rootKey)
         val settingsManager = PreferenceManager.getDefaultSharedPreferences(requireContext())
-        findPreference<androidx.preference.Preference>("cloudstream_diagnostic_report")
-            ?.setOnPreferenceClickListener {
-                DiagnosticDialog.show(requireContext())
-                true
-            }
-
 
         getPref(R.string.locale_key)?.setOnPreferenceClickListener { pref ->
             val current = getCurrentLocale(pref.context)
