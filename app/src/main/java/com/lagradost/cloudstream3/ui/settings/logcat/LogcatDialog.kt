@@ -61,6 +61,8 @@ import com.lagradost.cloudstream4.compose.rounded
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toPersistentList
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.OutputStream
@@ -70,18 +72,15 @@ import java.util.Date
 import java.util.Locale
 
 
-@Composable
-fun LogcatDialog(dismiss: () -> Unit) {
-    val list = remember { mutableStateOf(persistentListOf<LogcatItem>()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var filtered by remember { mutableStateOf(false) } // Raw by default.
-    var search by remember { mutableStateOf("") }
-    LaunchedEffect(dismiss) {
-        try {
-            isLoading = true
+/** The app may not have permission to clear all Android log buffers. Hide old entries locally too. */
+private object LogcatClearState {
+    @Volatile var hideBeforeMillis: Long = 0L
+}
 
-            // https://developer.android.com/studio/command-line/logcat
-            val process = Runtime.getRuntime().exec("logcat --binary -d")
+private suspend fun readLogcatSnapshot(vararg command: String): List<LogcatItem> =
+    withContext(Dispatchers.IO) {
+        val process = Runtime.getRuntime().exec(command)
+        try {
             val items = arrayListOf<LogcatItem>()
             LogcatBinaryParser(process.inputStream).use { parser ->
                 while (true) {
@@ -89,12 +88,55 @@ fun LogcatDialog(dismiss: () -> Unit) {
                     items.add(item)
                 }
             }
+            process.waitFor()
+            items
+        } finally {
+            process.destroy()
+        }
+    }
 
-            list.value = items.toPersistentList()
+@Composable
+fun LogcatDialog(dismiss: () -> Unit) {
+    val list = remember { mutableStateOf(persistentListOf<LogcatItem>()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var filtered by remember { mutableStateOf(false) } // Raw by default.
+    var search by remember { mutableStateOf("") }
+    var clearedAfter by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(dismiss) {
+        try {
+            isLoading = true
+
+            // The binary parser preserves the original CloudStream Logcat format.
+            val items = readLogcatSnapshot("logcat", "--binary", "-d")
+            list.value = items.filter {
+                it.date.toEpochMilliseconds() > LogcatClearState.hideBeforeMillis
+            }.toPersistentList()
         } catch (e: Exception) {
             logError(e) // kinda ironic
         } finally {
             isLoading = false
+        }
+    }
+    // After Clear, append new Logcat entries while this dialog stays open.
+    // We do not depend on `logcat -c`, which may be denied on some Android devices.
+    LaunchedEffect(clearedAfter) {
+        val cutoff = clearedAfter ?: return@LaunchedEffect
+        while (isActive) {
+            delay(2000)
+            try {
+                val recent = readLogcatSnapshot("logcat", "--binary", "-d", "-t", "1000")
+                val existing = list.value.toHashSet()
+                val additions = recent.filter {
+                    it.date.toEpochMilliseconds() > cutoff && existing.add(it)
+                }
+                if (additions.isNotEmpty()) {
+                    list.value = (list.value + additions).takeLast(2000).toPersistentList()
+                }
+            } catch (t: Exception) {
+                logError(t)
+                // Keep the dialog open even when this device restricts logcat access.
+                break
+            }
         }
     }
     val visibleItems by remember {
@@ -261,12 +303,18 @@ fun LogcatDialog(dismiss: () -> Unit) {
                 )
             }
             WhiteButton(text = stringResource(R.string.sort_clear)) {
-                try {
-                    Runtime.getRuntime().exec("logcat -c")
-                } catch (t: Throwable) {
-                    logError(t)
+                val cutoff = currentTimeMillis()
+                LogcatClearState.hideBeforeMillis = cutoff
+                list.value = persistentListOf() // Clear immediately, even if system Logcat cannot be cleared.
+                clearedAfter = cutoff // Start collecting new entries without closing the dialog.
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val process = Runtime.getRuntime().exec(arrayOf("logcat", "-c"))
+                        process.waitFor() // Best effort: device may deny clearing the system buffer.
+                    } catch (t: Exception) {
+                        logError(t)
+                    }
                 }
-                dismiss()
             }
             BlackButton(
                 text = stringResource(R.string.sort_close),
