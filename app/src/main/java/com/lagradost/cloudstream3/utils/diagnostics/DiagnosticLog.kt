@@ -27,8 +27,8 @@ object DiagnosticLog {
     private var latestSession = 0L
 
     private fun safeLabel(value: String): String = value
-        .replace(Regex("[^a-zA-Z0-9 _.=:+-]"), "_")
-        .take(80)
+        .replace(Regex("[^a-zA-Z0-9 _.=:+()$-]"), "_")
+        .take(200)
 
     private fun append(id: Long, stage: String, status: String, detail: String) {
         val entry = Entry(id, clock.format(Date()), SystemClock.elapsedRealtime(),
@@ -73,12 +73,26 @@ object DiagnosticLog {
         event(stage, "FAIL", "type=$type" +
             (nested?.let { " cause=$it" } ?: "") +
             (code?.let { " code=$it" } ?: ""), session)
+        // Safe call sites, not raw exception text: extension errors can contain stream tokens.
+        var error: Throwable? = cause
+        var depth = 0
+        while (error != null && depth < 3) {
+            val current = error
+            event("STACK", "INFO", "cause=$depth type=${safeLabel(current.javaClass.name)}", session)
+            for (frame in current.stackTrace.take(12)) {
+                event("STACK", "INFO", "at=${safeLabel(frame.className)}.${safeLabel(frame.methodName)}" +
+                    "(${safeLabel(frame.fileName ?: "unknown")}:${frame.lineNumber})", session)
+            }
+            error = current.cause
+            depth++
+        }
     }
 
     fun clear() = synchronized(lock) {
         events.clear()
         latestPlaybackSession = 0L
         latestSession = 0L
+        FilteredLogcat.clear()
     }
 
     private fun lastPlaybackEntries(): Pair<Long?, List<Entry>> {
@@ -90,7 +104,7 @@ object DiagnosticLog {
     fun summary(): String = synchronized(lock) {
         val (id, sessionEntries) = lastPlaybackEntries()
         buildString {
-            appendLine("CLOUDSTREAM DIAGNOSTIC v3 - IMPORTANT")
+            appendLine("CLOUDSTREAM DIAGNOSTIC v4 - IMPORTANT")
             appendLine("====================================")
             appendLine("Playback session: ${id ?: "none"}")
             if (sessionEntries.isEmpty()) {
@@ -126,8 +140,10 @@ object DiagnosticLog {
             appendLine()
             appendLine("OTHER RECENT SESSIONS: ${events.map { it.session }.distinct().count { it != id }}")
             appendLine("Full log: all recorded stages, status changes, timings and errors.")
-            appendLine("Only app-instrumented events; extension internals/HTTP traffic are not captured.")
-            appendLine("URLs, headers, cookies, tokens, titles and raw exception messages omitted.")
+            appendLine("Structured events above; filtered app-process Logcat below.")
+            appendLine("Logcat may be restricted on some devices; not all extension HTTP steps are logged.")
+            appendLine()
+            append(FilteredLogcat.importantReport(sessionEntries.firstOrNull()?.elapsedMs))
         }
     }
 
@@ -135,13 +151,13 @@ object DiagnosticLog {
     fun fullReport(): String = synchronized(lock) {
         val recent = events.toList()
         buildString {
-            appendLine("CLOUDSTREAM DIAGNOSTIC v3 - FULL LOG")
+            appendLine("CLOUDSTREAM DIAGNOSTIC v4 - FULL LOG")
             appendLine("====================================")
             appendLine("Events retained: ${recent.size}/$MAX_EVENTS | in-memory, oldest discarded first")
             appendLine("Latest playback session: ${latestPlaybackSession.takeIf { it != 0L } ?: "none"}")
             appendLine("Chronological events by session; concurrent requests may overlap.")
-            appendLine("Only instrumented stages; not system Logcat or extension internal HTTP logs.")
-            appendLine("URLs, headers, cookies, tokens, titles and raw exception messages omitted.")
+            appendLine("Structured events + filtered Logcat from this app process only.")
+            appendLine("Logcat details are not reliably attributable to a specific session.")
             if (recent.isEmpty()) appendLine("\nNo recorded events yet.")
             val ids = recent.map { it.session }.distinct().takeLast(MAX_SESSIONS_IN_REPORT)
             for (id in ids) {
@@ -154,6 +170,8 @@ object DiagnosticLog {
             }
             val omittedSessions = recent.map { it.session }.distinct().size - ids.size
             if (omittedSessions > 0) appendLine("\n$omittedSessions older sessions omitted; clear log to capture a fresh attempt.")
+            appendLine()
+            append(FilteredLogcat.fullReport())
         }
     }
 

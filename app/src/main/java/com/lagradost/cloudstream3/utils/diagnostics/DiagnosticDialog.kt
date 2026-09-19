@@ -17,7 +17,7 @@ object DiagnosticDialog {
     fun show(context: Context) {
         val summary = DiagnosticLog.summary()
         AlertDialog.Builder(context)
-            .setTitle("Diagnostic - Important")
+            .setTitle("Diagnostic v4 - Important")
             .setMessage(summary)
             .setPositiveButton("Full log") { _, _ -> showFull(context) }
             .setNeutralButton("Copy summary") { _, _ -> copy(context, "Diagnostic summary", summary) }
@@ -28,7 +28,7 @@ object DiagnosticDialog {
     private fun showFull(context: Context) {
         val report = DiagnosticLog.fullReport()
         AlertDialog.Builder(context)
-            .setTitle("Diagnostic - Full log")
+            .setTitle("Diagnostic v4 - Full log")
             .setMessage(report)
             .setPositiveButton("Copy full log") { _, _ -> copy(context, "Diagnostic full log", report) }
             .setNeutralButton("Clear log") { _, _ ->
