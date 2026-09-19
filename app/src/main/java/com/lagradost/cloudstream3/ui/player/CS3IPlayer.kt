@@ -37,6 +37,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticLog
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
@@ -280,6 +281,7 @@ class CS3IPlayer : IPlayer {
         autoPlay: Boolean?,
         preview: Boolean,
     ) {
+        DiagnosticLog.event("PLAYER", "START", if (link != null) "online" else "offline")
         Log.i(TAG, "loadPlayer")
         if (sameEpisode) {
             saveData()
@@ -1515,6 +1517,7 @@ class CS3IPlayer : IPlayer {
 
                     when (playbackState) {
                         Player.STATE_READY -> {
+                            DiagnosticLog.event("PLAYER", "PASS", "ready")
                             onRenderFirst()
                         }
 
@@ -1546,6 +1549,13 @@ class CS3IPlayer : IPlayer {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    val httpCode = generateSequence<Throwable>(error) { it.cause }
+                        .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+                        .firstOrNull()?.responseCode
+                    DiagnosticLog.error("PLAYBACK", error, code = httpCode ?: error.errorCode)
+                    if (httpCode != null) {
+                        DiagnosticLog.event("HTTP", "FAIL", "status=$httpCode")
+                    }
                     // If the Network fails then ignore the exception if the duration is set.
                     // This is to switch mirrors automatically if the stream has not been fetched, but
                     // allow playing the buffer without internet as then the duration is fetched.

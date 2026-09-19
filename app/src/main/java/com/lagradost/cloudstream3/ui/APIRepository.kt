@@ -19,10 +19,12 @@ import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.utils.Coroutines.atomicListOf
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicInteger
 
 class APIRepository(val api: MainAPI) {
     companion object {
@@ -83,7 +85,9 @@ class APIRepository(val api: MainAPI) {
     val vpnStatus = api.vpnStatus
 
     suspend fun load(url: String): Resource<LoadResponse> {
-        return safeApiCall {
+        val diagnosticId = DiagnosticLog.start(api.name)
+        val diagnosticStart = System.currentTimeMillis()
+        val response = safeApiCall {
             withTimeout(getTimeout(api.loadTimeoutMs)) {
                 if (isInvalidData(url)) throw ErrorLoadingException()
                 val fixedUrl = api.fixUrl(url)
@@ -118,6 +122,13 @@ class APIRepository(val api: MainAPI) {
                 } ?: throw ErrorLoadingException()
             }
         }
+        val elapsed = System.currentTimeMillis() - diagnosticStart
+        when (response) {
+            is Resource.Success -> DiagnosticLog.event("METADATA", "PASS", "elapsed=${elapsed}ms", diagnosticId)
+            is Resource.Failure -> DiagnosticLog.event("METADATA", "FAIL", "network=${response.isNetworkError} elapsed=${elapsed}ms", diagnosticId)
+            else -> DiagnosticLog.event("METADATA", "SKIP", "elapsed=${elapsed}ms", diagnosticId)
+        }
+        return response
     }
 
     suspend fun search(query: String, page: Int): Resource<SearchResponseList> {
@@ -207,12 +218,37 @@ class APIRepository(val api: MainAPI) {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        if (isInvalidData(data)) return false // this makes providers cleaner
+        val diagnosticId = DiagnosticLog.start(api.name)
+        if (isInvalidData(data)) {
+            DiagnosticLog.event("LINKS", "FAIL", "invalid_input", diagnosticId)
+            return false // this makes providers cleaner
+        }
+        val started = System.currentTimeMillis()
+        val linkCount = AtomicInteger(0)
+        val subtitleCount = AtomicInteger(0)
+        DiagnosticLog.event("LINKS", "START", "casting=$isCasting", diagnosticId)
         return try {
-            withTimeout(getTimeout(api.loadLinksTimeoutMs)) {
-                api.loadLinks(data, isCasting, subtitleCallback, callback)
+            val success = withTimeout(getTimeout(api.loadLinksTimeoutMs)) {
+                api.loadLinks(data, isCasting,
+                    { subtitle ->
+                        subtitleCount.incrementAndGet()
+                        subtitleCallback(subtitle)
+                    },
+                    { link ->
+                        linkCount.incrementAndGet()
+                        callback(link)
+                    }
+                )
             }
+            val status = if (success && linkCount.get() > 0) "PASS" else "FAIL"
+            DiagnosticLog.event(
+                "LINKS", status,
+                "returned=$success links=${linkCount.get()} subtitles=${subtitleCount.get()} elapsed=${System.currentTimeMillis() - started}ms",
+                diagnosticId
+            )
+            success
         } catch (throwable: Throwable) {
+            DiagnosticLog.error("LINKS", throwable, diagnosticId)
             logError(throwable)
             return false
         }

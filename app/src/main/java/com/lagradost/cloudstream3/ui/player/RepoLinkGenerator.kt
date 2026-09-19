@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.ui.result.ResultEpisode
 import com.lagradost.cloudstream3.utils.AppContextUtils.html
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.diagnostics.DiagnosticLog
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -100,6 +101,7 @@ class RepoLinkGenerator(
             // this stops all execution if links are cached
             // no extra get requests
             if (currentCache.saturated) {
+                DiagnosticLog.event("LINK_CACHE", "PASS", "links=${currentCache.linkCache.size} subtitles=${currentCache.subtitleCache.size}")
                 return true
             }
         }
@@ -110,7 +112,6 @@ class RepoLinkGenerator(
             current.data,
             isCasting = isCasting,
             subtitleCallback = { file ->
-                Log.d(TAG, "Loaded SubtitleFile: $file")
                 val correctFile = PlayerSubtitleHelper.getSubtitleData(file)
                 if (correctFile.url.isBlank() || !currentSubsUrls.add(correctFile.url)) {
                     return@loadLinks
@@ -133,7 +134,6 @@ class RepoLinkGenerator(
                 }
             },
             callback = { link ->
-                Log.d(TAG, "Loaded ExtractorLink: $link")
                 if (link.url.isBlank() || !currentLinksUrls.add(link.url)) {
                     return@loadLinks
                 }
@@ -154,6 +154,10 @@ class RepoLinkGenerator(
         synchronized(currentCache) {
             currentCache.saturated = currentCache.linkCache.isNotEmpty()
             currentCache.lastCachedTimestamp = unixTime
+            DiagnosticLog.event(
+                "LINK_FILTER", if (currentLinksUrls.isNotEmpty()) "PASS" else "FAIL",
+                "unique_links=${currentLinksUrls.size} cached=${currentCache.linkCache.size}"
+            )
         }
 
         return result
