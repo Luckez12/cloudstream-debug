@@ -142,6 +142,17 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Phone-only APK: generate just ARM64, without ARM32/x86/universal variants.
+    // Keep native codec dependencies and debug diagnostics unchanged.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         release {
             isDebuggable = false
@@ -208,17 +219,6 @@ android {
             // Enables legacy JNI packaging to reduce APK size (similar to builds before minSdk 23).
             // Note: This may increase app startup time slightly.
             useLegacyPackaging = true
-        }
-    }
-
-    // The arm64 APK contains only that CPU's native libraries; the universal APK
-    // remains available for other devices. Does not minify/obfuscate debug code.
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a")
-            isUniversalApk = true
         }
     }
 
