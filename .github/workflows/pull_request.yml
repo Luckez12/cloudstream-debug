@@ -1,14 +1,6 @@
 name: Artifact Build
 
-# Use the repository's existing debug build. Only add a ZIP overlay step.
-on:
-  push:
-    branches: [master]
-    paths:
-      - 'cloudstream-diagnostic-patch.zip'
-      - '.github/workflows/pull_request.yml'
-  pull_request:
-  workflow_dispatch:
+on: [pull_request]
 
 permissions:
   contents: read
@@ -18,30 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-
-    - name: Auto-unzip CloudStream diagnostic patch
-      shell: bash
-      run: |
-        if [ ! -f cloudstream-diagnostic-patch.zip ]; then
-          echo 'No diagnostic ZIP found; continuing with original source.'
-          exit 0
-        fi
-        python3 - <<'PYVALIDATE'
-        from pathlib import PurePosixPath
-        from zipfile import ZipFile
-        import stat
-        archive = 'cloudstream-diagnostic-patch.zip'
-        with ZipFile(archive) as z:
-            for item in z.infolist():
-                name = PurePosixPath(item.filename)
-                if (name.is_absolute() or '..' in name.parts or
-                    not item.filename.startswith('app/') or
-                    stat.S_ISLNK(item.external_attr >> 16)):
-                    raise SystemExit(f'Unsafe patch path: {item.filename}')
-        PYVALIDATE
-        unzip -o -q cloudstream-diagnostic-patch.zip -d .
-        echo 'Diagnostic patch extracted into repository paths.'
-
 
     - name: Set up JDK 17
       uses: actions/setup-java@v5
