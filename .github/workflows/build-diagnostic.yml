@@ -62,6 +62,9 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Avoid the obsolete 'tools' SDK package in the action's defaults.
+          packages: 'platform-tools'
 
       - name: Install Android platform used by this repository
         run: sdkmanager --install 'platforms;android-37'
