@@ -5,6 +5,32 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <EditText
+            android:id="@+id/search_logcat"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:singleLine="true"
+            android:inputType="text"
+            android:hint="Search log (tag, error, HTTP...)"
+            android:importantForAutofill="no" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/filter_btt"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_vertical"
+            android:text="Filtered OFF"
+            style="@style/BlackButton" />
+    </LinearLayout>
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/logcat_recycler_view"
         android:layout_width="match_parent"
@@ -26,14 +52,6 @@
             android:layout_width="wrap_content"
             android:layout_height="match_parent"
             android:orientation="horizontal">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/filter_btt"
-                android:text="Filtered"
-                android:layout_gravity="center_vertical|end"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                style="@style/WhiteButton" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/save_btt"

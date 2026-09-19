@@ -6,6 +6,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,12 +18,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -63,7 +66,8 @@ import java.util.Locale
 fun LogcatDialog(dismiss: () -> Unit) {
     val list = remember { mutableStateOf(persistentListOf<LogcatItem>()) }
     var isLoading by remember { mutableStateOf(true) }
-    var filtered by remember { mutableStateOf(true) }
+    var filtered by remember { mutableStateOf(false) } // Raw by default.
+    var search by remember { mutableStateOf("") }
     LaunchedEffect(dismiss) {
         try {
             isLoading = true
@@ -85,9 +89,16 @@ fun LogcatDialog(dismiss: () -> Unit) {
             isLoading = false
         }
     }
-    val visibleItems = if (filtered) list.value.filter {
-        ProviderLogcatFilter.keep(it.pid, android.os.Process.myPid(), it.tag, it.message)
-    } else list.value
+    val visibleItems by remember {
+        derivedStateOf {
+            val source = if (filtered) list.value.filter {
+                ProviderLogcatFilter.keep(it.pid, android.os.Process.myPid(), it.tag, it.message)
+            } else list.value
+            if (search.isBlank()) source else source.filter { item ->
+                item.toString().contains(search, ignoreCase = true)
+            }
+        }
+    }
     val (dismissFocus, confirmFocus) = remember { FocusRequester.createRefs() }
 
     val context = LocalContext.current
@@ -99,31 +110,53 @@ fun LogcatDialog(dismiss: () -> Unit) {
             Text(text = stringResource(R.string.log_cat))
         },
         text = {
-            if (isLoading) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            Column {
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    label = { Text("Search log") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
-            }
-            LazyColumn(
-                modifier = Modifier.focusProperties {
-                    start = dismissFocus
-                    end = confirmFocus
+                Row {
+                    WhiteButton(text = if (filtered) "Filtered ON" else "Filtered OFF") {
+                        filtered = !filtered
+                    }
                 }
-            ) {
-                items(items = visibleItems) { item ->
-                    LogcatItem(item, modifier = Modifier.focusProperties {
-                        start = dismissFocus
-                        end = confirmFocus
-                    })
+                if (isLoading) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.onBackground,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                    )
+                }
+                // Original plain-text Logcat look: no per-entry chips/colored bars.
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .focusProperties {
+                            start = dismissFocus
+                            end = confirmFocus
+                        }
+                ) {
+                    items(items = visibleItems) { item ->
+                        Text(
+                            text = item.toString(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                                .clickable {
+                                    clipboardHelper(txt("Logcat"), ProviderLogcatFilter.forSharing(item.toString()))
+                                },
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 14.sp,
+                            lineHeight = 18.sp
+                        )
+                    }
                 }
             }
         },
         confirmButton = {
-            WhiteButton(text = if (filtered) "Filtered (${visibleItems.size}/${list.value.size})" else "Raw (${list.value.size})") {
-                filtered = !filtered
-            }
             WhiteButton(
                 text = stringResource(R.string.sort_save),
                 modifier = Modifier.focusRequester(confirmFocus)

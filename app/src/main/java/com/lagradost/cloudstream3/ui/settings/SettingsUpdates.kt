@@ -164,18 +164,33 @@ class SettingsUpdates : BasePreferenceFragmentCompat() {
                 logError(e) // kinda ironic
             }
 
-            // Filtered is for provider debugging; Raw preserves the original full Logcat.
-            val filteredList = com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter
-                .filterText(logList, android.os.Process.myPid())
-            var filtered = true
-            fun visibleLog(): List<String> = if (filtered) filteredList else logList
-            val adapter = LogcatAdapter().apply { submitList(visibleLog().toList()) }
-            binding.filterBtt.text = "Filtered (${filteredList.size}/${logList.size})"
-            binding.filterBtt.setOnClickListener {
-                filtered = !filtered
-                binding.filterBtt.text = if (filtered) "Filtered (${filteredList.size}/${logList.size})" else "Raw (${logList.size})"
+            val filter = com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter
+            val filteredList = filter.filterText(logList, android.os.Process.myPid())
+            var filtered = false // Raw is the default. User chooses whether to filter.
+            var query = ""
+            fun visibleLog(): List<String> {
+                val source = if (filtered) filteredList else logList
+                if (query.isBlank()) return source
+                return source.filter { it.contains(query, ignoreCase = true) }
+            }
+            val adapter = LogcatAdapter().apply { submitList(logList.toList()) }
+            fun refreshLog() {
+                binding.filterBtt.text = if (filtered) "Filtered ON" else "Filtered OFF"
                 adapter.submitList(visibleLog().toList())
             }
+            binding.filterBtt.setOnClickListener {
+                filtered = !filtered
+                refreshLog()
+            }
+            binding.searchLogcat.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    query = s?.toString().orEmpty()
+                    refreshLog()
+                }
+                override fun afterTextChanged(s: android.text.Editable?) = Unit
+            })
+            refreshLog()
             binding.logcatRecyclerView.layoutManager = LinearLayoutManager(pref.context)
             binding.logcatRecyclerView.adapter = adapter
 
