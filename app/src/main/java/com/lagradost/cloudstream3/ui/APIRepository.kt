@@ -85,7 +85,7 @@ class APIRepository(val api: MainAPI) {
     val vpnStatus = api.vpnStatus
 
     suspend fun load(url: String): Resource<LoadResponse> {
-        val diagnosticId = DiagnosticLog.start(api.name, "metadata")
+        val diagnosticId = DiagnosticLog.start(api.name)
         val diagnosticStart = System.currentTimeMillis()
         val response = safeApiCall {
             withTimeout(getTimeout(api.loadTimeoutMs)) {
@@ -219,7 +219,7 @@ class APIRepository(val api: MainAPI) {
         callback: (ExtractorLink) -> Unit,
         diagnosticSession: Long? = null,
     ): Boolean {
-        val diagnosticId = diagnosticSession ?: DiagnosticLog.start(api.name, "links")
+        val diagnosticId = diagnosticSession ?: DiagnosticLog.startPlayback(api.name)
         if (isInvalidData(data)) {
             DiagnosticLog.event("LINKS", "FAIL", "invalid_input", diagnosticId)
             return false // this makes providers cleaner
@@ -227,6 +227,9 @@ class APIRepository(val api: MainAPI) {
         val started = System.currentTimeMillis()
         val linkCount = AtomicInteger(0)
         val subtitleCount = AtomicInteger(0)
+        val hlsCount = AtomicInteger(0)
+        val dashCount = AtomicInteger(0)
+        val otherCount = AtomicInteger(0)
         DiagnosticLog.event("LINKS", "START", "casting=$isCasting", diagnosticId)
         return try {
             val success = withTimeout(getTimeout(api.loadLinksTimeoutMs)) {
@@ -236,19 +239,25 @@ class APIRepository(val api: MainAPI) {
                         subtitleCallback(subtitle)
                     },
                     { link ->
-                        if (linkCount.incrementAndGet() == 1) {
-                            // Output of provider/extractor is visible; extension internals are not.
-                            DiagnosticLog.event("EXTRACTOR_OUTPUT", "PASS", "format=${link.type.name}", diagnosticId)
+                        linkCount.incrementAndGet()
+                        when (link.type.name) {
+                            "M3U8" -> hlsCount.incrementAndGet()
+                            "DASH" -> dashCount.incrementAndGet()
+                            else -> otherCount.incrementAndGet()
                         }
-                        DiagnosticLog.rememberLink(link.url, diagnosticId)
                         callback(link)
                     }
                 )
             }
-            val status = if (linkCount.get() > 0) "PASS" else "FAIL"
+            val status = if (success && linkCount.get() > 0) "PASS" else "FAIL"
             DiagnosticLog.event(
                 "LINKS", status,
                 "returned=$success links=${linkCount.get()} subtitles=${subtitleCount.get()} elapsed=${System.currentTimeMillis() - started}ms",
+                diagnosticId
+            )
+            DiagnosticLog.event(
+                "LINK_TYPES", "INFO",
+                "hls=${hlsCount.get()} dash=${dashCount.get()} other=${otherCount.get()}",
                 diagnosticId
             )
             success

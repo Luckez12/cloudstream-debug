@@ -50,7 +50,7 @@ class RepoLinkGenerator(
         isCasting: Boolean,
     ): Boolean {
         val current = videos.getOrNull(offset) ?: return false
-        val diagnosticId = DiagnosticLog.start(current.apiName, "links")
+        val diagnosticSession = DiagnosticLog.startPlayback(current.apiName)
 
         val currentCache = synchronized(cache) {
             cache[current.apiName to current.id] ?: Cache(
@@ -88,7 +88,6 @@ class RepoLinkGenerator(
             // call all callbacks
             currentCache.linkCache.forEach { link ->
                 currentLinksUrls.add(link.url)
-                DiagnosticLog.rememberLink(link.url, diagnosticId)
                 if (sourceTypes.contains(link.type)) {
                     callback(link to null)
                 }
@@ -103,11 +102,7 @@ class RepoLinkGenerator(
             // this stops all execution if links are cached
             // no extra get requests
             if (currentCache.saturated) {
-                val playable = currentCache.linkCache.count { sourceTypes.contains(it.type) }
-                DiagnosticLog.event(
-                    "LINK_CACHE", if (playable > 0) "PASS" else "FAIL",
-                    "playable=$playable links=${currentCache.linkCache.size} subtitles=${currentCache.subtitleCache.size}", diagnosticId
-                )
+                DiagnosticLog.event("LINK_CACHE", "PASS", "links=${currentCache.linkCache.size} subtitles=${currentCache.subtitleCache.size}", diagnosticSession)
                 return true
             }
         }
@@ -116,8 +111,8 @@ class RepoLinkGenerator(
             getApiFromNameNull(current.apiName) ?: throw Exception("This provider does not exist")
         ).loadLinks(
             current.data,
-            diagnosticSession = diagnosticId,
             isCasting = isCasting,
+            diagnosticSession = diagnosticSession,
             subtitleCallback = { file ->
                 val correctFile = PlayerSubtitleHelper.getSubtitleData(file)
                 if (correctFile.url.isBlank() || !currentSubsUrls.add(correctFile.url)) {
@@ -147,7 +142,6 @@ class RepoLinkGenerator(
 
                 synchronized(currentCache) {
                     if (currentCache.linkCache.add(link)) {
-                        DiagnosticLog.rememberLink(link.url, diagnosticId)
                         if (sourceTypes.contains(link.type)) {
                             callback(Pair(link, null))
                         }
@@ -162,10 +156,10 @@ class RepoLinkGenerator(
         synchronized(currentCache) {
             currentCache.saturated = currentCache.linkCache.isNotEmpty()
             currentCache.lastCachedTimestamp = unixTime
-            val playable = currentCache.linkCache.count { sourceTypes.contains(it.type) }
             DiagnosticLog.event(
-                "LINK_FILTER", if (playable > 0) "PASS" else "FAIL",
-                "unique_links=${currentLinksUrls.size} playable=$playable cached=${currentCache.linkCache.size}", diagnosticId
+                "LINK_FILTER", if (currentLinksUrls.isNotEmpty()) "PASS" else "FAIL",
+                "unique_links=${currentLinksUrls.size} cached=${currentCache.linkCache.size}",
+                diagnosticSession
             )
         }
 
