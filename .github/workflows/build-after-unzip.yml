@@ -1,6 +1,7 @@
 name: Build After Auto Unzip
 
 on:
+  workflow_dispatch:
   workflow_run:
     workflows:
       - Auto Unzip Diagnostic Patch
@@ -11,16 +12,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-after-unzip-${{ github.event.workflow_run.head_branch }}
+  group: build-after-unzip-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   build:
-    # Only build after the unzip workflow succeeds on our own master branch.
+    # Manual runs are allowed; automatic runs require successful unzip on master.
     if: >-
-      ${{ github.event.workflow_run.conclusion == 'success' &&
-          github.event.workflow_run.head_branch == 'master' &&
-          github.event.workflow_run.head_repository.full_name == github.repository }}
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'workflow_run' &&
+           github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_branch == 'master' &&
+           github.event.workflow_run.head_repository.full_name == github.repository) }}
     runs-on: ubuntu-latest
     steps:
       # Do not checkout workflow_run.head_sha: that is the commit BEFORE unzip
@@ -28,7 +31,7 @@ jobs:
       - name: Checkout patched repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch }}
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
           persist-credentials: false
 
       - name: Set up JDK 17
