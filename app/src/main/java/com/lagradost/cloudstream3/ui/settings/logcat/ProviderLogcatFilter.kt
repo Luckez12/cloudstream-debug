@@ -12,13 +12,16 @@ object ProviderLogcatFilter {
             t.startsWith("viewrootimpl") || t.startsWith("choreographer") ||
             t.startsWith("inputmethodmanager") || t.startsWith("insetscontroller") ||
             t.startsWith("inputtransport") || t.startsWith("bufferqueue") ||
-            t.startsWith("surfaceflinger")) return false
+            t.startsWith("surfaceflinger") || t.startsWith("transcrolloptimizer") ||
+            t.startsWith("hwui")) return false
         if (t.startsWith("binder") && "avc: denied" in m &&
             ("/proc/perfmgr" in m || "perf_ioctl" in m)) return false
         if ("avc: denied" in m && ("/proc/perfmgr" in m || "perf_ioctl" in m)) return false
         if ("motionevent" in m && ("enqueueinputevent" in m || "processinputevents" in m)) return false
         if (t == "displaymanager" && "refresh_rate" in m) return false
         if (t == "activitythread" && "android.media.tv" in m) return false
+        if (t == "view" && "enqueueinputevent" in m) return false
+        if (t == "inputdispatcher" && "motionevent" in m) return false
         return true
     }
 

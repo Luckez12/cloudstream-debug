@@ -175,7 +175,7 @@ class SettingsUpdates : BasePreferenceFragmentCompat() {
             }
             val adapter = LogcatAdapter().apply { submitList(logList.toList()) }
             fun refreshLog() {
-                binding.filterBtt.text = if (filtered) "Filtered ON" else "Filtered OFF"
+                binding.filterBtt.text = if (filtered) "Filtered" else "Raw"
                 adapter.submitList(visibleLog().toList())
             }
             binding.filterBtt.setOnClickListener {

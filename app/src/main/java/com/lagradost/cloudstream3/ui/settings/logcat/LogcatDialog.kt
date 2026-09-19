@@ -2,10 +2,14 @@ package com.lagradost.cloudstream3.ui.settings.logcat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -18,7 +22,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -35,6 +40,9 @@ import androidx.compose.ui.focus.FocusRequester.Companion.FocusRequesterFactory.
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.Alignment as ComposeAlignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -111,16 +119,34 @@ fun LogcatDialog(dismiss: () -> Unit) {
         },
         text = {
             Column {
-                OutlinedTextField(
-                    value = search,
-                    onValueChange = { search = it },
-                    label = { Text("Search log") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row {
-                    WhiteButton(text = if (filtered) "Filtered ON" else "Filtered OFF") {
-                        filtered = !filtered
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = ComposeAlignment.CenterVertically
+                ) {
+                    BasicTextField(
+                        value = search,
+                        onValueChange = { search = it },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 14.sp
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(36.dp)
+                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(5.dp))
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        decorationBox = { innerTextField ->
+                            Box {
+                                if (search.isEmpty()) {
+                                    Text("Search log…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+                    TextButton(onClick = { filtered = !filtered }) {
+                        Text(if (filtered) "Filtered" else "Raw")
                     }
                 }
                 if (isLoading) {
@@ -144,7 +170,7 @@ fun LogcatDialog(dismiss: () -> Unit) {
                             text = item.toString(),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 6.dp)
+                                .padding(vertical = 2.dp)
                                 .clickable {
                                     clipboardHelper(txt("Logcat"), ProviderLogcatFilter.forSharing(item.toString()))
                                 },
@@ -157,6 +183,11 @@ fun LogcatDialog(dismiss: () -> Unit) {
             }
         },
         confirmButton = {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = ComposeAlignment.CenterVertically
+            ) {
             WhiteButton(
                 text = stringResource(R.string.sort_save),
                 modifier = Modifier.focusRequester(confirmFocus)
@@ -237,14 +268,14 @@ fun LogcatDialog(dismiss: () -> Unit) {
                 }
                 dismiss()
             }
-        },
-        dismissButton = {
             BlackButton(
                 text = stringResource(R.string.sort_close),
                 onClick = dismiss,
                 modifier = Modifier.focusRequester(dismissFocus)
             )
+            }
         },
+        dismissButton = {},
         properties = DialogProperties(usePlatformDefaultWidth = false)
     )
 }
