@@ -1,184 +1,162 @@
 package com.lagradost.cloudstream3.utils.diagnostics
 
-import android.util.Base64
+import android.os.SystemClock
 import android.util.Log
-import java.security.MessageDigest
-import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
-import java.util.LinkedHashMap
 import java.util.Locale
 
-/**
- * Diagnostic v2: bounded, in-memory reports grouped by request/playback attempt.
- * NEVER pass raw server text, response bodies, titles, URLs, headers or throwable.message
- * to event(). Only fixed labels, numeric status/error codes and enum names belong here.
- */
+/** In-memory diagnostic history; only structured, non-sensitive values may enter the log. */
 object DiagnosticLog {
-    private const val MAX_ATTEMPTS = 12
-    private const val MAX_EVENTS_PER_ATTEMPT = 36
-    private const val MAX_LINK_IDENTIFIERS = 120
-    private val lock = Any()
-    private val clock = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
-    private val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
-
-    private data class Attempt(
-        val id: Long,
-        val provider: String,
-        val kind: String,
-        val events: ArrayDeque<String> = ArrayDeque(),
-        var played: Boolean = false,
-        var lastFailure: String? = null,
-        var hint: String? = null,
+    private const val MAX_EVENTS = 600
+    private const val MAX_SESSIONS_IN_REPORT = 15
+    private data class Entry(
+        val session: Long,
+        val time: String,
+        val elapsedMs: Long,
+        val stage: String,
+        val status: String,
+        val detail: String,
     )
-
-    private val attempts = ArrayDeque<Attempt>()
-    // Only salted hashes are retained; source URLs never appear in diagnostic history.
-    private val linkToAttempt = LinkedHashMap<String, Long>()
+    private val lock = Any()
+    private val events = ArrayDeque<Entry>()
+    private val clock = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private var sequence = 0L
+    private var latestPlaybackSession = 0L
+    private var latestSession = 0L
 
-    private fun safe(value: String, max: Int = 135): String =
-        value.replace(Regex("[^a-zA-Z0-9 _.=:+-]"), "_").take(max)
+    private fun safeLabel(value: String): String = value
+        .replace(Regex("[^a-zA-Z0-9 _.=:+-]"), "_")
+        .take(80)
 
-    private fun add(attempt: Attempt, stage: String, status: String, detail: String = "") {
-        val content = "${clock.format(Date())} ${safe(stage, 28)} ${safe(status, 10)} ${safe(detail)}".trimEnd()
-        if (attempt.events.size >= MAX_EVENTS_PER_ATTEMPT) attempt.events.removeFirst()
-        attempt.events.addLast(content)
-        Log.d("CloudStreamDiag", "#${attempt.id} $content")
+    private fun append(id: Long, stage: String, status: String, detail: String) {
+        val entry = Entry(id, clock.format(Date()), SystemClock.elapsedRealtime(),
+            safeLabel(stage), safeLabel(status), safeLabel(detail))
+        if (events.size >= MAX_EVENTS) events.removeFirst()
+        events.addLast(entry)
+        // Mirror only sanitized structured events to Logcat. Never log raw extension text/URLs.
+        Log.d("CloudStreamDiag", "#${entry.session} ${entry.stage} ${entry.status} ${entry.detail}")
     }
 
-    fun start(provider: String, kind: String = "metadata"): Long = synchronized(lock) {
-        val attempt = Attempt(++sequence, safe(provider, 48), safe(kind, 16))
-        if (attempts.size >= MAX_ATTEMPTS) {
-            val evicted = attempts.removeFirst()
-            linkToAttempt.entries.removeAll { it.value == evicted.id }
-        }
-        attempts.addLast(attempt)
-        add(attempt, "REQUEST", "START", "kind=${attempt.kind}")
-        attempt.id
+    fun start(provider: String): Long = synchronized(lock) {
+        val id = ++sequence
+        latestSession = id
+        append(id, "PROVIDER", "START", "provider=${safeLabel(provider)}")
+        id
     }
 
+    fun startPlayback(provider: String): Long = synchronized(lock) {
+        val id = ++sequence
+        latestSession = id
+        latestPlaybackSession = id
+        append(id, "PLAYBACK", "START", "provider=${safeLabel(provider)}")
+        id
+    }
+
+    fun currentPlaybackSession(): Long? = synchronized(lock) {
+        latestPlaybackSession.takeIf { it != 0L }
+    }
+
+    /** Only fixed labels, known enum names, booleans and numbers are allowed as details. */
     fun event(stage: String, status: String, detail: String = "", session: Long? = null) {
         synchronized(lock) {
-            val attempt = if (session != null) attempts.firstOrNull { it.id == session }
-                else attempts.lastOrNull()
-            // A callback completing after Clear/eviction must not start a ghost session.
-            if (attempt == null) return
-            add(attempt, stage, status, detail)
-            if (status == "FAIL") {
-                attempt.lastFailure = safe("$stage $detail", 125)
-                attempt.hint = when {
-                    stage == "HTTP" && detail.contains("status=401") ->
-                        "Server returned HTTP 401. Check authorization or required headers."
-                    stage == "HTTP" && detail.contains("status=403") ->
-                        "Server returned HTTP 403. Check access, URL expiry or required headers."
-                    stage == "HTTP" && detail.contains("status=404") ->
-                        "Server returned HTTP 404. The requested media may be unavailable."
-                    stage == "HTTP" && detail.contains("status=429") ->
-                        "Server returned HTTP 429. Request rate may be limited."
-                    stage == "HTTP" -> "Media server returned an HTTP error; check the status code."
-                    stage == "LINKS" || stage == "LINK_FILTER" ->
-                        "No usable links / provider link request failed. Provider internals are not captured."
-                    stage == "PLAYBACK" || stage == "PLAYER_SETUP" ->
-                        "Player failed after source selection. Check error code and sanitized trace."
-                    else -> attempt.hint
-                }
-            }
+            val id = session ?: latestPlaybackSession.takeIf { it != 0L } ?: latestSession
+            append(id, stage, status, detail)
         }
     }
 
-    /** Only safe Java/Kotlin frame identifiers and line numbers; never exception messages. */
+    /** Exception messages and stack traces can contain stream tokens: keep types/codes only. */
     fun error(stage: String, cause: Throwable, session: Long? = null, code: Int? = null) {
-        val root = generateSequence(cause) { it.cause?.takeIf { nested -> nested !== it } }
-            .take(4).last()
-        event(
-            stage, "FAIL",
-            "type=${safe(cause.javaClass.simpleName, 50)} root=${safe(root.javaClass.simpleName, 50)}" +
-                (code?.let { " code=$it" } ?: ""), session
-        )
-        // Framework exceptions often have no useful app frames: include a few sanitized frames.
-        val frames = (cause.stackTrace.asSequence() + root.stackTrace.asSequence())
-            .filter {
-                it.className.startsWith("com.lagradost.cloudstream") ||
-                    it.className.startsWith("androidx.media3")
-            }.take(4).toList()
-        frames.forEach { frame ->
-            event("TRACE", "INFO", "at=${safe(frame.className, 90)}.${safe(frame.methodName, 35)}:${frame.lineNumber}", session)
-        }
-    }
-
-    private fun linkIdentifier(url: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        digest.update(salt)
-        return Base64.encodeToString(digest.digest(url.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
-    }
-
-    /** Call from the link callback, including when a cached link is reused. */
-    fun rememberLink(url: String, session: Long) {
-        if (url.isBlank()) return
-        synchronized(lock) {
-            if (attempts.none { it.id == session }) return
-            val key = linkIdentifier(url)
-            linkToAttempt.remove(key)
-            linkToAttempt[key] = session
-            while (linkToAttempt.size > MAX_LINK_IDENTIFIERS) {
-                linkToAttempt.remove(linkToAttempt.keys.first())
-            }
-        }
-    }
-
-    /** Tie player callbacks to the exact provider attempt that produced its link. */
-    fun playerStarted(url: String?, format: String): Long {
-        val matched = synchronized(lock) {
-            url?.let { linkToAttempt[linkIdentifier(it)] }
-                ?.takeIf { id -> attempts.any { it.id == id } }
-        }
-        val session = matched ?: start(if (url == null) "Offline" else "Unlinked source", "playback")
-        synchronized(lock) { attempts.firstOrNull { it.id == session }?.played = true }
-        event("PLAYER", "START", "format=${safe(format, 24)}", session)
-        return session
+        val type = safeLabel(cause.javaClass.simpleName.ifBlank { "Throwable" })
+        val nested = cause.cause?.let { safeLabel(it.javaClass.simpleName) }
+        event(stage, "FAIL", "type=$type" +
+            (nested?.let { " cause=$it" } ?: "") +
+            (code?.let { " code=$it" } ?: ""), session)
     }
 
     fun clear() = synchronized(lock) {
-        attempts.clear()
-        linkToAttempt.clear()
-        // sequence deliberately not reset: late callbacks cannot reuse cleared IDs.
+        events.clear()
+        latestPlaybackSession = 0L
+        latestSession = 0L
     }
 
-    fun report(): String = synchronized(lock) {
-        val lastPlayer = attempts.lastOrNull { it.played }
-        val lastFailedLinks = attempts.lastOrNull { it.kind == "links" && it.lastFailure != null }
-        val selected = if (lastFailedLinks != null &&
-            (lastPlayer == null || lastFailedLinks.id > lastPlayer.id)
-        ) lastFailedLinks else lastPlayer ?: attempts.lastOrNull { it.kind == "links" }
-            ?: attempts.lastOrNull()
+    private fun lastPlaybackEntries(): Pair<Long?, List<Entry>> {
+        val id = latestPlaybackSession.takeIf { it != 0L }
+        return id to (if (id == null) emptyList() else events.filter { it.session == id })
+    }
+
+    /** Short, actionable view of the CURRENT attempt, not errors from older sessions. */
+    fun summary(): String = synchronized(lock) {
+        val (id, sessionEntries) = lastPlaybackEntries()
         buildString {
-            appendLine("CLOUDSTREAM DIAGNOSTIC v2")
-            appendLine("=========================")
-            appendLine("In-memory report | latest failed link request or playback attempt")
-            appendLine("No URLs, titles, headers, cookies, tokens or error messages collected.")
-            appendLine()
-            if (selected == null) {
-                appendLine("No events. Open a title, select a source and try Play.")
+            appendLine("CLOUDSTREAM DIAGNOSTIC v3 - IMPORTANT")
+            appendLine("====================================")
+            appendLine("Playback session: ${id ?: "none"}")
+            if (sessionEntries.isEmpty()) {
+                appendLine("No playback events yet. Try playing a video first.")
             } else {
-                appendLine("SESSION #${selected.id} | provider=${selected.provider} | ${selected.kind}")
-                appendLine("-----------------------------------------")
-                selected.events.forEach { appendLine(it) }
-                appendLine()
-                appendLine("LAST FAILURE: ${selected.lastFailure ?: "None captured"}")
-                appendLine("POSSIBLE AREA: ${selected.hint ?: "No failure recorded in this attempt."}")
-                appendLine()
-                val other = attempts.filter { it.id != selected.id }.takeLast(3)
-                if (other.isNotEmpty()) {
-                    appendLine("OTHER RECENT REQUESTS (not merged with playback)")
-                    other.forEach { attempt ->
-                        appendLine("#${attempt.id} ${attempt.provider} ${attempt.kind} | ${attempt.lastFailure ?: "no failure"}")
-                    }
-                    appendLine()
-                }
-                appendLine("LIMITATION: internal extension/extractor HTTP steps are not visible unless the extension logs them.")
+                val provider = sessionEntries.firstOrNull { it.stage == "PLAYBACK" && it.status == "START" }
+                appendLine(provider?.detail ?: "provider=unknown")
+                val failures = sessionEntries.filter { it.status == "FAIL" }
+                val latestFailure = failures.lastOrNull()
+                if (latestFailure != null) {
+                    appendLine("LAST FAILURE: ${latestFailure.stage} ${latestFailure.detail}")
+                    appendLine("Failure events: ${failures.size}; see Full log for their order.")
+                } else appendLine("LAST FAILURE: None captured in this attempt.")
+                val links = sessionEntries.lastOrNull { it.stage == "LINKS" && it.status != "START" }
+                appendLine("LINKS: " + (links?.let { "${it.status} ${it.detail}" } ?: "not recorded / cached"))
+                val cache = sessionEntries.lastOrNull { it.stage == "LINK_CACHE" }
+                if (cache != null) appendLine("CACHE: ${cache.detail}")
+                val frame = sessionEntries.lastOrNull { it.stage == "FIRST_FRAME" }
+                appendLine("FIRST FRAME: " + (frame?.let { "${it.status} ${it.detail}" } ?: "not observed"))
+                val latestState = sessionEntries.lastOrNull { it.stage == "PLAYER_STATE" }
+                if (latestState != null) {
+                    val pending = if (latestState.detail == "buffering") {
+                        " for ${(SystemClock.elapsedRealtime() - latestState.elapsedMs) / 1000}s"
+                    } else ""
+                    appendLine("PLAYER STATE: ${latestState.detail}$pending")
+                } else appendLine("PLAYER STATE: not recorded")
+                val http = sessionEntries.lastOrNull { it.stage == "HTTP" && it.status == "FAIL" }
+                if (http != null) appendLine("HTTP: ${http.detail}")
+                val area = sessionEntries.lastOrNull { it.stage == "FAILURE_AREA" }
+                if (area != null) appendLine("POSSIBLE AREA: ${area.detail}")
+                if (latestFailure == null && frame == null) appendLine("NOTE: player ready does NOT confirm video rendered.")
             }
+            appendLine()
+            appendLine("OTHER RECENT SESSIONS: ${events.map { it.session }.distinct().count { it != id }}")
+            appendLine("Full log: all recorded stages, status changes, timings and errors.")
+            appendLine("Only app-instrumented events; extension internals/HTTP traffic are not captured.")
+            appendLine("URLs, headers, cookies, tokens, titles and raw exception messages omitted.")
         }
     }
+
+    /** Entire bounded in-memory history, chronological and separated by request session. */
+    fun fullReport(): String = synchronized(lock) {
+        val recent = events.toList()
+        buildString {
+            appendLine("CLOUDSTREAM DIAGNOSTIC v3 - FULL LOG")
+            appendLine("====================================")
+            appendLine("Events retained: ${recent.size}/$MAX_EVENTS | in-memory, oldest discarded first")
+            appendLine("Latest playback session: ${latestPlaybackSession.takeIf { it != 0L } ?: "none"}")
+            appendLine("Chronological events by session; concurrent requests may overlap.")
+            appendLine("Only instrumented stages; not system Logcat or extension internal HTTP logs.")
+            appendLine("URLs, headers, cookies, tokens, titles and raw exception messages omitted.")
+            if (recent.isEmpty()) appendLine("\nNo recorded events yet.")
+            val ids = recent.map { it.session }.distinct().takeLast(MAX_SESSIONS_IN_REPORT)
+            for (id in ids) {
+                appendLine()
+                appendLine("SESSION #$id" + if (id == latestPlaybackSession) " [LATEST PLAYBACK]" else "")
+                for (entry in recent.filter { it.session == id }) {
+                    appendLine("${entry.time} ${entry.stage} ${entry.status}" +
+                        if (entry.detail.isBlank()) "" else " ${entry.detail}")
+                }
+            }
+            val omittedSessions = recent.map { it.session }.distinct().size - ids.size
+            if (omittedSessions > 0) appendLine("\n$omittedSessions older sessions omitted; clear log to capture a fresh attempt.")
+        }
+    }
+
+    // Backward-compatible API for any existing caller.
+    fun report(): String = summary()
 }

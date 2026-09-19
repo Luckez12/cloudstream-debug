@@ -138,6 +138,11 @@ const val toleranceAfterUs = 300_000L
 @OptIn(UnstableApi::class)
 class CS3IPlayer : IPlayer {
     private var playerListener: Player.Listener? = null
+    private var diagnosticStartMs = 0L
+    private var diagnosticSessionId: Long? = null
+    private var diagnosticBufferStartMs = 0L
+    private var diagnosticFirstFrameRecorded = false
+    private var diagnosticLastPlayerState = -1
     private var isPlaying = false
     private var exoPlayer: ExoPlayer? = null
         set(value) {
@@ -166,7 +171,6 @@ class CS3IPlayer : IPlayer {
     private var lastMuteVolume: Float = 1.0f
 
     private var currentLink: ExtractorLink? = null
-    private var playbackDiagnosticId: Long? = null
     private var currentDownloadedFile: ExtractorUri? = null
     private var hasUsedFirstRender = false
 
@@ -282,7 +286,13 @@ class CS3IPlayer : IPlayer {
         autoPlay: Boolean?,
         preview: Boolean,
     ) {
-        playbackDiagnosticId = DiagnosticLog.playerStarted(link?.url, link?.type?.name ?: "OFFLINE")
+        diagnosticStartMs = android.os.SystemClock.elapsedRealtime()
+        diagnosticSessionId = DiagnosticLog.currentPlaybackSession()
+        diagnosticBufferStartMs = 0L
+        diagnosticFirstFrameRecorded = false
+        diagnosticLastPlayerState = -1
+        val mediaType = link?.type?.name ?: if (data != null) "offline" else "unknown"
+        DiagnosticLog.event("PLAYER", "START", "format=$mediaType", diagnosticSessionId)
         Log.i(TAG, "loadPlayer")
         if (sameEpisode) {
             saveData()
@@ -1388,8 +1398,6 @@ class CS3IPlayer : IPlayer {
         onlineSource: HttpDataSource.Factory? = null,
     ) {
         Log.i(TAG, "loadExo")
-        // Capture the attempt for this player instance; mirrors/retries may start a new one.
-        val diagnosticSession = playbackDiagnosticId
         val settingsManager = PreferenceManager.getDefaultSharedPreferences(context)
         val maxVideoHeight = settingsManager.getInt(
             context.getString(if (context.isUsingMobileData()) R.string.quality_pref_mobile_data_key else R.string.quality_pref_key),
@@ -1520,7 +1528,7 @@ class CS3IPlayer : IPlayer {
 
                     when (playbackState) {
                         Player.STATE_READY -> {
-                            DiagnosticLog.event("PLAYER", "PASS", "ready", diagnosticSession)
+                            DiagnosticLog.event("PLAYER", "INFO", "ready elapsed=${android.os.SystemClock.elapsedRealtime() - diagnosticStartMs}ms", diagnosticSessionId)
                             onRenderFirst()
                         }
 
@@ -1555,10 +1563,18 @@ class CS3IPlayer : IPlayer {
                     val httpCode = generateSequence<Throwable>(error) { it.cause }
                         .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
                         .firstOrNull()?.responseCode
-                    DiagnosticLog.error("PLAYBACK", error, diagnosticSession, code = error.errorCode)
+                    DiagnosticLog.error("PLAYBACK", error, diagnosticSessionId, code = error.errorCode)
                     if (httpCode != null) {
-                        DiagnosticLog.event("HTTP", "FAIL", "status=$httpCode", diagnosticSession)
+                        DiagnosticLog.event("HTTP", "FAIL", "status=$httpCode", diagnosticSessionId)
                     }
+                    val failureArea = when {
+                        httpCode != null -> "http_response"
+                        error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "network_connection"
+                        error.cause is HlsPlaylistTracker.PlaylistStuckException -> "hls_playlist"
+                        else -> "player_or_media"
+                    }
+                    DiagnosticLog.event("FAILURE_AREA", "INFO", failureArea, diagnosticSessionId)
+                    DiagnosticLog.event("PLAYBACK", "INFO", "elapsed=${android.os.SystemClock.elapsedRealtime() - diagnosticStartMs}ms", diagnosticSessionId)
                     // If the Network fails then ignore the exception if the duration is set.
                     // This is to switch mirrors automatically if the stream has not been fetched, but
                     // allow playing the buffer without internet as then the duration is fetched.
@@ -1605,6 +1621,7 @@ class CS3IPlayer : IPlayer {
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     super.onIsPlayingChanged(isPlaying)
+                    DiagnosticLog.event("PLAYING", "INFO", "active=$isPlaying", diagnosticSessionId)
                     if (isPlaying) {
                         event(RequestAudioFocusEvent())
                         onRenderFirst()
@@ -1613,9 +1630,26 @@ class CS3IPlayer : IPlayer {
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     super.onPlaybackStateChanged(playbackState)
-                    when (playbackState) {
-                        Player.STATE_BUFFERING -> DiagnosticLog.event("PLAYER", "INFO", "buffering", diagnosticSession)
-                        Player.STATE_ENDED -> DiagnosticLog.event("PLAYER", "INFO", "ended", diagnosticSession)
+                    if (diagnosticLastPlayerState != playbackState) {
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (diagnosticBufferStartMs != 0L && playbackState != Player.STATE_BUFFERING) {
+                            DiagnosticLog.event("BUFFERING", "END",
+                                "duration=${now - diagnosticBufferStartMs}ms", diagnosticSessionId)
+                            diagnosticBufferStartMs = 0L
+                        }
+                        val state = when (playbackState) {
+                            Player.STATE_IDLE -> "idle"
+                            Player.STATE_BUFFERING -> "buffering"
+                            Player.STATE_READY -> "ready"
+                            Player.STATE_ENDED -> "ended"
+                            else -> "unknown"
+                        }
+                        if (playbackState == Player.STATE_BUFFERING) {
+                            diagnosticBufferStartMs = now
+                            DiagnosticLog.event("BUFFERING", "START", "", diagnosticSessionId)
+                        }
+                        DiagnosticLog.event("PLAYER_STATE", "INFO", state, diagnosticSessionId)
+                        diagnosticLastPlayerState = playbackState
                     }
                     when (playbackState) {
                         Player.STATE_READY -> {
@@ -1656,11 +1690,17 @@ class CS3IPlayer : IPlayer {
 
                 override fun onRenderedFirstFrame() {
                     super.onRenderedFirstFrame()
+                    if (!diagnosticFirstFrameRecorded) {
+                        diagnosticFirstFrameRecorded = true
+                        DiagnosticLog.event("FIRST_FRAME", "PASS",
+                            "elapsed=${android.os.SystemClock.elapsedRealtime() - diagnosticStartMs}ms", diagnosticSessionId)
+                    }
                     onRenderFirst()
                     updatedTime(source = PlayerEventSource.Player)
                 }
             }.also { playerListener = it })
         } catch (t: Throwable) {
+            DiagnosticLog.error("PLAYER_SETUP", t, diagnosticSessionId)
             Log.e(TAG, "loadExo error", t)
             event(ErrorEvent(t))
         }
@@ -1731,7 +1771,6 @@ class CS3IPlayer : IPlayer {
             subtitleHelper.setActiveSubtitles(activeSubtitles.toSet())
             loadExo(context, listOf(MediaItemSlice(mediaItem, Long.MIN_VALUE)), subSources)
         } catch (t: Throwable) {
-            DiagnosticLog.error("PLAYER_SETUP", t, playbackDiagnosticId)
             Log.e(TAG, "loadOfflinePlayer error", t)
             event(ErrorEvent(t))
         }
@@ -1997,7 +2036,6 @@ class CS3IPlayer : IPlayer {
                 onlineSource = onlineSourceFactory
             )
         } catch (t: Throwable) {
-            DiagnosticLog.error("PLAYER_SETUP", t, playbackDiagnosticId)
             Log.e(TAG, "loadOnlinePlayer error", t)
             event(ErrorEvent(t))
         }
