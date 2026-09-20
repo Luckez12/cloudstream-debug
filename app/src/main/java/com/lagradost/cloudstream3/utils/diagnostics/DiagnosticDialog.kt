@@ -6,25 +6,31 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Rect
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
-import android.view.WindowManager
+import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import com.lagradost.cloudstream3.R
-import kotlin.math.min
 
-/** A dedicated, scrollable provider trace panel. Never changes the application's Logcat. */
+/**
+ * A dedicated provider-diagnostic PAGE in the activity content, NOT an AlertDialog.
+ * It overlays the settings content only: system bars and CloudStream bottom navigation
+ * remain visible. The application's Logcat screen is never modified by this class.
+ */
 object DiagnosticDialog {
+    private const val PAGE_TAG = "cloudstream-provider-diagnostic-page"
+
     private fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density + 0.5f).toInt()
 
@@ -35,120 +41,194 @@ object DiagnosticDialog {
     }
 
     fun show(context: Context) {
-        var full = false
-        var selected = 0
-        val padding = dp(context, 12)
-        val panel = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(padding, dp(context, 8), padding, dp(context, 8))
-        }
-        val title = TextView(context).apply {
-            text = "Provider Diagnostic"
-            textSize = 19f
-            setTypeface(null, Typeface.BOLD)
-            setPadding(0, 0, 0, dp(context, 4))
-        }
-        panel.addView(title)
+        val activity = context as? Activity ?: return
+        val root = activity.findViewById<FrameLayout>(R.id.homeRoot) ?: return
+        // Don't stack pages or periodic refresh loops if the menu is tapped twice.
+        if (root.findViewWithTag<View>(PAGE_TAG) != null) return
 
-        val selectionRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val mode = Button(context).apply { text = "Important"; isAllCaps = false }
-        selectionRow.addView(mode, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        val sections = Spinner(context)
-        val adapter = ArrayAdapter(context, android.R.layout.simple_spinner_item, ProviderTrace.sections).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-        sections.adapter = adapter
-        selectionRow.addView(sections, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f))
-        panel.addView(selectionRow)
-
-        val body = TextView(context).apply {
-            textSize = 12f
-            typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
-            setPadding(dp(context, 4), dp(context, 6), dp(context, 4), dp(context, 12))
-        }
-        val scroll = ScrollView(context).apply {
-            isFillViewport = true
-            addView(body)
-        }
-        panel.addView(scroll, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-        ))
-        val actions = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val copy = Button(context).apply { text = "Copy"; isAllCaps = false }
-        val clear = Button(context).apply { text = "Clear"; isAllCaps = false }
-        val close = Button(context).apply { text = "Close"; isAllCaps = false }
-        listOf(copy, clear, close).forEach {
-            actions.addView(it, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        }
-        panel.addView(actions)
-
-        val dialog = AlertDialog.Builder(context).setView(panel).create()
-        val handler = Handler(Looper.getMainLooper())
-        var lastContent = ""
-        fun refresh() {
-            val text = ProviderTrace.report(ProviderTrace.sections[selected], !full)
-            if (text != lastContent) {
-                val position = scroll.scrollY
-                body.text = text
-                lastContent = text
-                scroll.post { scroll.scrollTo(0, position) }
+        root.post {
+            if (activity.isFinishing || activity.isDestroyed || root.findViewWithTag<View>(PAGE_TAG) != null) {
+                return@post
             }
-        }
-        mode.setOnClickListener {
-            full = !full
-            mode.text = if (full) "Full trace" else "Important"
-            refresh()
-        }
-        sections.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                selected = position
+
+            var full = false
+            var selected = 0
+            val padding = dp(activity, 16)
+            val page = LinearLayout(activity).apply {
+                tag = PAGE_TAG
+                orientation = LinearLayout.VERTICAL
+                setPadding(padding, dp(activity, 12), padding, dp(activity, 8))
+                setBackgroundColor(resolveBackground(activity))
+                isClickable = true // Prevent taps from reaching Settings underneath this page.
+                isFocusableInTouchMode = true
+            }
+
+            val heading = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val back = Button(activity).apply {
+                text = "‹"
+                contentDescription = "Close Diagnostic"
+                isAllCaps = false
+                textSize = 24f
+                minWidth = dp(activity, 44)
+                minimumWidth = dp(activity, 44)
+            }
+            heading.addView(back, LinearLayout.LayoutParams(dp(activity, 52), dp(activity, 48)))
+            heading.addView(TextView(activity).apply {
+                text = "Provider Diagnostic"
+                textSize = 20f
+                setTypeface(null, Typeface.BOLD)
+                maxLines = 1
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            page.addView(heading)
+
+            // Full-width controls on separate rows: no squeezed/wrapped "Important" label.
+            val modeRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            val important = Button(activity).apply {
+                text = "Important"
+                isAllCaps = false
+                isEnabled = false
+            }
+            val trace = Button(activity).apply {
+                text = "Full trace"
+                isAllCaps = false
+            }
+            modeRow.addView(important, LinearLayout.LayoutParams(0, dp(activity, 48), 1f))
+            modeRow.addView(trace, LinearLayout.LayoutParams(0, dp(activity, 48), 1f))
+            page.addView(modeRow)
+
+            val sections = Spinner(activity)
+            sections.adapter = ArrayAdapter(
+                activity, android.R.layout.simple_spinner_item, ProviderTrace.sections
+            ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            page.addView(sections, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 48)
+            ))
+
+            val body = TextView(activity).apply {
+                textSize = 13f
+                typeface = Typeface.MONOSPACE
+                setTextIsSelectable(true)
+                setPadding(dp(activity, 4), dp(activity, 12), dp(activity, 4), dp(activity, 12))
+            }
+            val scroll = ScrollView(activity).apply {
+                isFillViewport = true
+                addView(body)
+            }
+            // Only log content scrolls. Action buttons remain pinned above bottom navigation.
+            page.addView(scroll, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            ))
+
+            val actions = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val copyButton = Button(activity).apply { text = "Copy"; isAllCaps = false }
+            val clearButton = Button(activity).apply { text = "Clear"; isAllCaps = false }
+            val closeButton = Button(activity).apply { text = "Close"; isAllCaps = false }
+            listOf(copyButton, clearButton, closeButton).forEach {
+                actions.addView(it, LinearLayout.LayoutParams(0, dp(activity, 48), 1f))
+            }
+            page.addView(actions)
+
+            val handler = Handler(Looper.getMainLooper())
+            var lastContent = ""
+            fun refresh() {
+                if (page.parent == null) return
+                val content = ProviderTrace.report(ProviderTrace.sections[selected], !full)
+                if (lastContent != content) {
+                    val previousScroll = scroll.scrollY
+                    body.text = content
+                    lastContent = content
+                    scroll.post { if (page.parent != null) scroll.scrollTo(0, previousScroll) }
+                }
+            }
+
+            var backCallback: OnBackPressedCallback? = null
+            val update = object : Runnable {
+                override fun run() {
+                    if (page.parent == null) return
+                    refresh()
+                    handler.postDelayed(this, 1500)
+                }
+            }
+            fun closePage() {
+                handler.removeCallbacks(update)
+                backCallback?.remove()
+                backCallback = null
+                (page.parent as? ViewGroup)?.removeView(page)
+            }
+
+            back.setOnClickListener { closePage() }
+            closeButton.setOnClickListener { closePage() }
+            important.setOnClickListener {
+                full = false
+                important.isEnabled = false
+                trace.isEnabled = true
                 scroll.scrollTo(0, 0)
                 refresh()
             }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-        }
-        copy.setOnClickListener { copy(context, ProviderTrace.report(ProviderTrace.sections[selected], !full)) }
-        clear.setOnClickListener { ProviderTrace.clear(); scroll.scrollTo(0, 0); refresh() }
-        close.setOnClickListener { dialog.dismiss() }
-
-        val update = object : Runnable {
-            override fun run() {
-                if (!dialog.isShowing) return
+            trace.setOnClickListener {
+                full = true
+                important.isEnabled = true
+                trace.isEnabled = false
+                scroll.scrollTo(0, 0)
                 refresh()
-                handler.postDelayed(this, 1500)
             }
-        }
-        dialog.setOnShowListener {
-            // Occupy the app's content area, not the status-bar safe area or bottom navigation.
-            val activity = context as? Activity
+            sections.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    selected = position
+                    scroll.scrollTo(0, 0)
+                    refresh()
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            }
+            copyButton.setOnClickListener { copy(activity, ProviderTrace.report(ProviderTrace.sections[selected], !full)) }
+            clearButton.setOnClickListener {
+                ProviderTrace.clear()
+                scroll.scrollTo(0, 0)
+                refresh()
+            }
+
+            // Activity root is already inside system-bar-safe content on normal phones.
+            // Explicitly account for edge-to-edge layouts and for the actual nav position.
+            val rootOnScreen = IntArray(2)
+            root.getLocationOnScreen(rootOnScreen)
             val visible = Rect()
-            activity?.window?.decorView?.getWindowVisibleDisplayFrame(visible)
-            val metrics = context.resources.displayMetrics
-            val availableTop = if (visible.height() > 0) visible.top else dp(context, 24)
-            var availableBottom = if (visible.height() > 0) visible.bottom else metrics.heightPixels
-            val bottomNav = activity?.findViewById<View>(R.id.nav_view)
-            if (bottomNav != null && bottomNav.visibility == View.VISIBLE && bottomNav.height > 0) {
-                val location = IntArray(2)
-                bottomNav.getLocationOnScreen(location)
-                if (location[1] > availableTop) availableBottom = min(availableBottom, location[1])
+            activity.window.decorView.getWindowVisibleDisplayFrame(visible)
+            val safeTop = (visible.top - rootOnScreen[1]).coerceAtLeast(0).coerceAtMost(root.height / 3)
+            var bottomMargin = 0
+            val nav = activity.findViewById<View>(R.id.nav_view)
+            if (nav?.visibility == View.VISIBLE && nav.height > 0) {
+                val navOnScreen = IntArray(2)
+                nav.getLocationOnScreen(navOnScreen)
+                val navTopInRoot = navOnScreen[1] - rootOnScreen[1]
+                if (navTopInRoot in 1 until root.height) {
+                    bottomMargin = root.height - navTopInRoot
+                }
             }
-            val panelHeight = (availableBottom - availableTop - dp(context, 16)).coerceAtLeast(dp(context, 180))
-            dialog.window?.apply {
-                setBackgroundDrawable(ColorDrawable(resolveBackground(context)))
-                setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-                setDimAmount(0f) // Keep the original bottom bar visible.
-                clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                attributes = attributes.apply { y = dp(context, 8) }
-                setLayout(metrics.widthPixels - dp(context, 16), panelHeight)
+            if (bottomMargin == 0 && visible.bottom > 0) {
+                bottomMargin = (rootOnScreen[1] + root.height - visible.bottom).coerceAtLeast(0)
             }
-            handler.post(update)
+            root.addView(page, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            ).apply {
+                topMargin = safeTop
+                this.bottomMargin = bottomMargin
+            })
+            if (activity is ComponentActivity) {
+                backCallback = object : OnBackPressedCallback(true) {
+                    override fun handleOnBackPressed() { closePage() }
+                }.also { activity.onBackPressedDispatcher.addCallback(activity, it) }
+            }
+            page.requestFocus()
+            refresh()
+            handler.postDelayed(update, 1500)
         }
-        dialog.setOnDismissListener { handler.removeCallbacks(update) }
-        dialog.show()
     }
 
     private fun resolveBackground(context: Context): Int {
