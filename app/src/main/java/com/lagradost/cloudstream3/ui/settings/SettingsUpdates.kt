@@ -156,46 +156,19 @@ class SettingsUpdates : BasePreferenceFragmentCompat() {
             val logList = mutableListOf<String>()
             try {
                 // https://developer.android.com/studio/command-line/logcat
-                val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "threadtime"))
+                val process = Runtime.getRuntime().exec("logcat -d")
                 val bufferedReader = BufferedReader(InputStreamReader(process.inputStream))
-                bufferedReader.use { reader -> reader.lineSequence().forEach { logList.add(it) } }
-                process.waitFor()
+                bufferedReader.lineSequence().forEach { logList.add(it) }
             } catch (e: Exception) {
                 logError(e) // kinda ironic
             }
 
-            val filter = com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter
-            val filteredList = filter.filterText(logList, android.os.Process.myPid())
-            var filtered = false // Raw is the default. User chooses whether to filter.
-            var query = ""
-            fun visibleLog(): List<String> {
-                val source = if (filtered) filteredList else logList
-                if (query.isBlank()) return source
-                return source.filter { it.contains(query, ignoreCase = true) }
-            }
-            val adapter = LogcatAdapter().apply { submitList(logList.toList()) }
-            fun refreshLog() {
-                binding.filterBtt.text = if (filtered) "Filtered" else "Raw"
-                adapter.submitList(visibleLog().toList())
-            }
-            binding.filterBtt.setOnClickListener {
-                filtered = !filtered
-                refreshLog()
-            }
-            binding.searchLogcat.addTextChangedListener(object : android.text.TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    query = s?.toString().orEmpty()
-                    refreshLog()
-                }
-                override fun afterTextChanged(s: android.text.Editable?) = Unit
-            })
-            refreshLog()
+            val adapter = LogcatAdapter().apply { submitList(logList) }
             binding.logcatRecyclerView.layoutManager = LinearLayoutManager(pref.context)
             binding.logcatRecyclerView.adapter = adapter
 
             binding.copyBtt.setOnClickListener {
-                clipboardHelper(txt("Logcat"), com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter.forSharing(visibleLog().joinToString("\n")))
+                clipboardHelper(txt("Logcat"), logList.joinToString("\n"))
                 dialog.dismissSafe(activity)
             }
 
@@ -215,7 +188,7 @@ class SettingsUpdates : BasePreferenceFragmentCompat() {
                         "txt",
                         false
                     ).openNew()
-                    fileStream.writer().use { writer -> writer.write(com.lagradost.cloudstream3.ui.settings.logcat.ProviderLogcatFilter.forSharing(visibleLog().joinToString("\n"))) }
+                    fileStream.writer().use { writer -> writer.write(logList.joinToString("\n")) }
                     dialog.dismissSafe(activity)
                 } catch (t: Throwable) {
                     logError(t)

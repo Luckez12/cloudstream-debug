@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.lagradost.cloudstream3.utils.diagnostics.ProviderTrace
 import android.util.Rational
 import android.widget.FrameLayout
 import androidx.annotation.AnyThread
@@ -136,6 +137,7 @@ const val toleranceAfterUs = 300_000L
 
 @OptIn(UnstableApi::class)
 class CS3IPlayer : IPlayer {
+    private var providerTracePlayerId: Long = 0L
     private var playerListener: Player.Listener? = null
     private var isPlaying = false
     private var exoPlayer: ExoPlayer? = null
@@ -281,6 +283,8 @@ class CS3IPlayer : IPlayer {
         preview: Boolean,
     ) {
         Log.i(TAG, "loadPlayer")
+        providerTracePlayerId = ProviderTrace.begin("PLAYER", "selected_source",
+            "source=" + when { link != null -> "stream"; data != null -> "local"; else -> "none" })
         if (sameEpisode) {
             saveData()
         } else {
@@ -1546,6 +1550,8 @@ class CS3IPlayer : IPlayer {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    ProviderTrace.exception(providerTracePlayerId, error)
+                    ProviderTrace.note(providerTracePlayerId, "PLAYER_ERROR", "code=${error.errorCode}")
                     // If the Network fails then ignore the exception if the duration is set.
                     // This is to switch mirrors automatically if the stream has not been fetched, but
                     // allow playing the buffer without internet as then the duration is fetched.
@@ -1600,6 +1606,13 @@ class CS3IPlayer : IPlayer {
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     super.onPlaybackStateChanged(playbackState)
+                    ProviderTrace.note(providerTracePlayerId, "PLAYER_STATE", when (playbackState) {
+                        Player.STATE_IDLE -> "idle"
+                        Player.STATE_BUFFERING -> "buffering"
+                        Player.STATE_READY -> "ready"
+                        Player.STATE_ENDED -> "ended"
+                        else -> "unknown"
+                    })
                     when (playbackState) {
                         Player.STATE_READY -> {
 
@@ -1639,6 +1652,8 @@ class CS3IPlayer : IPlayer {
 
                 override fun onRenderedFirstFrame() {
                     super.onRenderedFirstFrame()
+                    ProviderTrace.note(providerTracePlayerId, "FIRST_FRAME", "rendered")
+                    ProviderTrace.finish(providerTracePlayerId, "first_frame=yes")
                     onRenderFirst()
                     updatedTime(source = PlayerEventSource.Player)
                 }

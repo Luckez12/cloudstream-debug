@@ -1,6 +1,7 @@
 package com.lagradost.cloudstream3.ui.player
 
 import android.util.Log
+import com.lagradost.cloudstream3.utils.diagnostics.ProviderTrace
 import com.lagradost.cloudstream3.APIHolder.getApiFromNameNull
 import com.lagradost.cloudstream3.APIHolder.unixTime
 import com.lagradost.cloudstream3.LoadResponse
@@ -100,6 +101,8 @@ class RepoLinkGenerator(
             // this stops all execution if links are cached
             // no extra get requests
             if (currentCache.saturated) {
+                val op = ProviderTrace.begin("LINK_CACHE", current.apiName)
+                ProviderTrace.finish(op, "cached_streams=${currentCache.linkCache.size}")
                 return true
             }
         }

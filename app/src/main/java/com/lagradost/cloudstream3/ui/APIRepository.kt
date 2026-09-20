@@ -19,6 +19,7 @@ import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.utils.Coroutines.atomicListOf
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.diagnostics.ProviderTrace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -82,8 +83,24 @@ class APIRepository(val api: MainAPI) {
     val hasQuickSearch = api.hasQuickSearch
     val vpnStatus = api.vpnStatus
 
+    private suspend fun <T> traceResult(stage: String, extra: String = "", action: suspend () -> Resource<T>): Resource<T> {
+        val id = ProviderTrace.begin(stage, api.name, extra)
+        return try {
+            val result = action()
+            when (result) {
+                is Resource.Success -> ProviderTrace.finish(id)
+                is Resource.Failure -> ProviderTrace.failure(id, "ProviderFailure")
+                else -> ProviderTrace.note(id, stage, "result=${result.javaClass.simpleName}")
+            }
+            result
+        } catch (t: Throwable) {
+            ProviderTrace.exception(id, t)
+            throw t
+        }
+    }
+
     suspend fun load(url: String): Resource<LoadResponse> {
-        return safeApiCall {
+        return traceResult("METADATA") { safeApiCall {
             withTimeout(getTimeout(api.loadTimeoutMs)) {
                 if (isInvalidData(url)) throw ErrorLoadingException()
                 val fixedUrl = api.fixUrl(url)
@@ -119,12 +136,13 @@ class APIRepository(val api: MainAPI) {
             }
         }
     }
+    }
 
     suspend fun search(query: String, page: Int): Resource<SearchResponseList> {
         if (query.isEmpty())
             return Resource.Success(newSearchResponseList(emptyList()))
 
-        return safeApiCall {
+        return traceResult("SEARCH", "page=$page") { safeApiCall {
             withTimeout(getTimeout(api.searchTimeoutMs)) {
                 (api.search(query, page)
                     ?: throw ErrorLoadingException())
@@ -132,12 +150,13 @@ class APIRepository(val api: MainAPI) {
             }
         }
     }
+    }
 
     suspend fun quickSearch(query: String): Resource<SearchResponseList> {
         if (query.isEmpty())
             return Resource.Success(newSearchResponseList(emptyList()))
 
-        return safeApiCall {
+        return traceResult("QUICK_SEARCH") { safeApiCall {
             withTimeout(getTimeout(api.quickSearchTimeoutMs)) {
                 newSearchResponseList(
                     api.quickSearch(query) ?: throw ErrorLoadingException(),
@@ -145,6 +164,7 @@ class APIRepository(val api: MainAPI) {
                 )
             }
         }
+    }
     }
 
     suspend fun waitForHomeDelay() {
@@ -154,16 +174,18 @@ class APIRepository(val api: MainAPI) {
     }
 
     suspend fun getMainPage(page: Int, nameIndex: Int? = null): Resource<List<HomePageResponse?>> {
-        return safeApiCall {
+        return traceResult("HOMEPAGE", "page=$page section=${nameIndex ?: "all"}") { safeApiCall {
             withTimeout(getTimeout(api.getMainPageTimeoutMs)) {
                 api.lastHomepageRequest = unixTimeMS
 
                 nameIndex?.let { api.mainPage.getOrNull(it) }?.let { data ->
                     listOf(
-                        api.getMainPage(
-                            page,
-                            MainPageRequest(data.name, data.data, data.horizontalImages)
-                        )
+                        ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page") {
+                            api.getMainPage(
+                                page,
+                                MainPageRequest(data.name, data.data, data.horizontalImages)
+                            )
+                        }
                     )
                 } ?: run {
                     if (api.sequentialMainPage) {
@@ -173,19 +195,23 @@ class APIRepository(val api: MainAPI) {
                                 delay(api.sequentialMainPageDelay)
                             first = false
 
-                            api.getMainPage(
-                                page,
-                                MainPageRequest(data.name, data.data, data.horizontalImages)
-                            )
+                            ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page") {
+                                api.getMainPage(
+                                    page,
+                                    MainPageRequest(data.name, data.data, data.horizontalImages)
+                                )
+                            }
                         }
                     } else {
                         with(CoroutineScope(coroutineContext)) {
                             api.mainPage.map { data ->
                                 async {
-                                    api.getMainPage(
-                                        page,
-                                        MainPageRequest(data.name, data.data, data.horizontalImages)
-                                    )
+                                    ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page") {
+                                        api.getMainPage(
+                                            page,
+                                            MainPageRequest(data.name, data.data, data.horizontalImages)
+                                        )
+                                    }
                                 }
                             }.map { it.await() }
                         }
@@ -193,6 +219,7 @@ class APIRepository(val api: MainAPI) {
                 }
             }
         }
+    }
     }
 
     suspend fun extractorVerifierJob(extractorData: String?) {
@@ -207,12 +234,26 @@ class APIRepository(val api: MainAPI) {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        if (isInvalidData(data)) return false // this makes providers cleaner
+        val op = ProviderTrace.begin("LINKS", api.name, "casting=$isCasting")
+        if (isInvalidData(data)) {
+            ProviderTrace.failure(op, "InvalidEpisodeData")
+            return false
+        }
+        val streams = java.util.concurrent.atomic.AtomicInteger()
+        val subtitles = java.util.concurrent.atomic.AtomicInteger()
         return try {
-            withTimeout(getTimeout(api.loadLinksTimeoutMs)) {
-                api.loadLinks(data, isCasting, subtitleCallback, callback)
+            val result = withTimeout(getTimeout(api.loadLinksTimeoutMs)) {
+                api.loadLinks(data, isCasting,
+                    { file -> subtitles.incrementAndGet(); subtitleCallback(file) },
+                    { link -> streams.incrementAndGet(); callback(link) }
+                )
             }
+            val detail = "returned=$result streams=${streams.get()} subtitles=${subtitles.get()}"
+            if (result && streams.get() > 0) ProviderTrace.finish(op, detail)
+            else ProviderTrace.failure(op, "NoPlayableLinks", detail)
+            result
         } catch (throwable: Throwable) {
+            ProviderTrace.exception(op, throwable)
             logError(throwable)
             return false
         }

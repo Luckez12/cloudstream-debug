@@ -12,6 +12,7 @@ import okhttp3.Cache
 import okhttp3.Headers
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.OkHttpClient
+import com.lagradost.cloudstream3.utils.diagnostics.ProviderHttpTrace
 import org.conscrypt.Conscrypt
 import java.io.File
 import java.security.Security
@@ -39,6 +40,7 @@ fun buildDefaultClient(context: Context, ignoreSSL: Boolean = false): OkHttpClie
     val settingsManager = PreferenceManager.getDefaultSharedPreferences(context)
     val dns = settingsManager.getInt(context.getString(R.string.dns_key), 0)
     val baseClient = OkHttpClient.Builder()
+        .addInterceptor(ProviderHttpTrace())
         .followRedirects(true)
         .followSslRedirects(true)
         .apply {

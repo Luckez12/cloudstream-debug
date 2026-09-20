@@ -241,6 +241,10 @@ class SettingsFragment : BaseFragment<MainSettingsBinding>(
                 }
             }
 
+            settingsDiagnostic.setOnClickListener {
+                com.lagradost.cloudstream3.utils.diagnostics.DiagnosticDialog.show(requireContext())
+            }
+
             // Default focus on TV
             if (isLayout(TV)) {
                 settingsGeneral.requestFocus()

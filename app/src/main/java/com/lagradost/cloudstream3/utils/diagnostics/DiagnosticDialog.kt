@@ -3,39 +3,48 @@ package com.lagradost.cloudstream3.utils.diagnostics
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 
-/** Settings > Diagnostic: important summary first, then detailed event history on demand. */
+/** A completely separate screen in Settings, not a replacement for Logcat. */
 object DiagnosticDialog {
-    private fun copy(context: Context, title: String, content: String) {
+    private fun copy(context: Context, text: String) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText(title, content))
+        clipboard.setPrimaryClip(ClipData.newPlainText("CloudStream provider diagnostic", text))
         Toast.makeText(context, "Diagnostic copied", Toast.LENGTH_SHORT).show()
     }
 
-    fun show(context: Context) {
-        val summary = DiagnosticLog.summary()
-        AlertDialog.Builder(context)
-            .setTitle("Diagnostic v4 - Important")
-            .setMessage(summary)
-            .setPositiveButton("Full log") { _, _ -> showFull(context) }
-            .setNeutralButton("Copy summary") { _, _ -> copy(context, "Diagnostic summary", summary) }
-            .setNegativeButton("Close", null)
-            .show()
-    }
+    fun show(context: Context) = open(context, false)
 
-    private fun showFull(context: Context) {
-        val report = DiagnosticLog.fullReport()
-        AlertDialog.Builder(context)
-            .setTitle("Diagnostic v4 - Full log")
-            .setMessage(report)
-            .setPositiveButton("Copy full log") { _, _ -> copy(context, "Diagnostic full log", report) }
-            .setNeutralButton("Clear log") { _, _ ->
-                DiagnosticLog.clear()
-                Toast.makeText(context, "Diagnostic cleared", Toast.LENGTH_SHORT).show()
+    private fun open(context: Context, full: Boolean) {
+        val body = TextView(context).apply {
+            text = if (full) ProviderTrace.full() else ProviderTrace.important()
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(24, 20, 24, 20)
+        }
+        val scroll = ScrollView(context).apply { addView(body) }
+        val dialog = AlertDialog.Builder(context)
+            .setTitle(if (full) "Diagnostic — Full trace" else "Diagnostic — Important")
+            .setView(scroll)
+            .setPositiveButton(if (full) "Important" else "Full trace") { _, _ -> open(context, !full) }
+            .setNeutralButton("Copy") { _, _ -> copy(context, if (full) ProviderTrace.full() else ProviderTrace.important()) }
+            .setNegativeButton("Close", null)
+            .create()
+        val handler = Handler(Looper.getMainLooper())
+        val update = object : Runnable {
+            override fun run() {
+                if (!dialog.isShowing) return
+                body.text = if (full) ProviderTrace.full() else ProviderTrace.important()
+                handler.postDelayed(this, 1500)
             }
-            .setNegativeButton("Back") { _, _ -> show(context) }
-            .show()
+        }
+        dialog.setOnShowListener { handler.post(update) }
+        dialog.setOnDismissListener { handler.removeCallbacks(update) }
+        dialog.show()
     }
 }
