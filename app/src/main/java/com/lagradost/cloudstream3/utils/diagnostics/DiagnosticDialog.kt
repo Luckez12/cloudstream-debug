@@ -89,7 +89,6 @@ object DiagnosticDialog {
             val important = Button(activity).apply {
                 text = "Important"
                 isAllCaps = false
-                isEnabled = false
             }
             val trace = Button(activity).apply {
                 text = "Full trace"
@@ -111,10 +110,13 @@ object DiagnosticDialog {
                 textSize = 13f
                 typeface = Typeface.MONOSPACE
                 setTextIsSelectable(true)
-                setPadding(dp(activity, 4), dp(activity, 12), dp(activity, 4), dp(activity, 12))
+                // The last event must be readable above the fixed action bar.
+                setPadding(dp(activity, 4), dp(activity, 12), dp(activity, 4), dp(activity, 28))
             }
             val scroll = ScrollView(activity).apply {
                 isFillViewport = true
+                clipToPadding = false
+                setPadding(0, 0, 0, dp(activity, 8))
                 addView(body)
             }
             // Only log content scrolls. Action buttons remain pinned above bottom navigation.
@@ -138,6 +140,13 @@ object DiagnosticDialog {
             var lastContent = ""
             fun refresh() {
                 if (page.parent == null) return
+                // Both the visual selection and report use the SAME mode snapshot.
+                important.text = if (full) "Important" else "✓ Important"
+                trace.text = if (full) "✓ Full trace" else "Full trace"
+                important.alpha = if (full) 0.72f else 1f
+                trace.alpha = if (full) 1f else 0.72f
+                important.setTypeface(null, if (full) Typeface.NORMAL else Typeface.BOLD)
+                trace.setTypeface(null, if (full) Typeface.BOLD else Typeface.NORMAL)
                 val content = ProviderTrace.report(ProviderTrace.sections[selected], !full)
                 if (lastContent != content) {
                     val previousScroll = scroll.scrollY
@@ -166,15 +175,11 @@ object DiagnosticDialog {
             closeButton.setOnClickListener { closePage() }
             important.setOnClickListener {
                 full = false
-                important.isEnabled = false
-                trace.isEnabled = true
                 scroll.scrollTo(0, 0)
                 refresh()
             }
             trace.setOnClickListener {
                 full = true
-                important.isEnabled = true
-                trace.isEnabled = false
                 scroll.scrollTo(0, 0)
                 refresh()
             }

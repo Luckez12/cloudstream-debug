@@ -141,7 +141,10 @@ object ProviderTrace {
                 appendLine("FAILURES / SLOW STAGES")
                 val important = matchingEntries.filter { it.level == "FAIL" || it.level == "SLOW" }
                 if (important.isEmpty()) appendLine("No failed or slow stages recorded in this section.")
-                important.takeLast(80).forEach { e -> appendLine("${e.at} #${e.op} ${e.level} ${e.stage} ${e.info}") }
+                important.takeLast(80).forEachIndexed { index, e ->
+                    if (index > 0) appendLine()
+                    appendLine("${e.at} #${e.op} ${e.level} ${e.stage} ${e.info}")
+                }
                 appendLine("Open Full trace for the events preceding a failure and its stack trace.")
             } else {
                 val categories = if (section == "Overview") sections.subList(1, 8) else listOf(section)
@@ -151,7 +154,12 @@ object ProviderTrace {
                         appendLine()
                         appendLine("=== ${category.uppercase(Locale.US)} (${current.size}) ===")
                         if (current.isEmpty()) appendLine("No events recorded.")
-                        current.forEach { e -> appendLine("${e.at} #${e.op} ${e.level} ${e.stage} ${e.info}") }
+                        current.forEachIndexed { index, e ->
+                            // Keep consecutive STACK frames attached to their error;
+                            // separate normal events so a long trace is readable.
+                            if (index > 0 && e.stage != "STACK") appendLine()
+                            appendLine("${e.at} #${e.op} ${e.level} ${e.stage} ${e.info}")
+                        }
                     }
                 }
                 if (matchingEntries.isEmpty() && section == "Overview") appendLine("No events recorded yet.")
