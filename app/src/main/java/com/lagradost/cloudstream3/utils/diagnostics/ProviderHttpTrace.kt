@@ -3,17 +3,23 @@ package com.lagradost.cloudstream3.utils.diagnostics
 import okhttp3.Interceptor
 import okhttp3.Response
 
-/** Only shared OkHttp client. Do not log URL path/query, headers, body or exception messages. */
+/** Only traced shared-client requests. Unrelated images/telemetry never enter provider trace. */
 class ProviderHttpTrace : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
+        if (!ProviderTrace.hasOperationContext()) return chain.proceed(chain.request())
         val request = chain.request()
-        val host = request.url.host
-        val id = ProviderTrace.begin("HTTP", host, "method=${request.method}")
+        // Static endpoint components only. Strip IDs, userinfo, query, fragments and signed paths.
+        val endpoint = request.url.pathSegments.take(4).joinToString("/", prefix = "/") { part ->
+            if (part.matches(Regex("[a-zA-Z][a-zA-Z_-]{1,23}")) &&
+                !part.contains(Regex("(?i)token|secret|auth|cookie|password|signature|key"))) part else ":id"
+        }
+        val id = ProviderTrace.begin("HTTP", request.url.host,
+            "method=${request.method} endpoint=$endpoint")
         return try {
             val response = chain.proceed(request)
-            val redirect = if (response.priorResponse != null) "redirect=yes" else "redirect=no"
-            if (response.code >= 400) ProviderTrace.failure(id, "HTTP_${response.code}", redirect)
-            else ProviderTrace.finish(id, "status=${response.code} $redirect")
+            val details = "status=${response.code} redirected=${response.priorResponse != null} bytes=${response.header("Content-Length")?.toLongOrNull() ?: -1}"
+            if (response.code >= 400) ProviderTrace.httpWarning(id, response.code, details)
+            else ProviderTrace.finish(id, details)
             response
         } catch (t: Exception) {
             ProviderTrace.exception(id, t)

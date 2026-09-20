@@ -86,11 +86,23 @@ class APIRepository(val api: MainAPI) {
     private suspend fun <T> traceResult(stage: String, extra: String = "", action: suspend () -> Resource<T>): Resource<T> {
         val id = ProviderTrace.begin(stage, api.name, extra)
         return try {
-            val result = action()
+            val result = ProviderTrace.inOperation(id) { action() }
             when (result) {
-                is Resource.Success -> ProviderTrace.finish(id)
-                is Resource.Failure -> ProviderTrace.failure(id, "ProviderFailure")
-                else -> ProviderTrace.note(id, stage, "result=${result.javaClass.simpleName}")
+                is Resource.Success -> {
+                    val detail = when (val value = result.value) {
+                        is SearchResponseList -> "items=${value.items.size}"
+                        is LoadResponse -> "metadata=loaded"
+                        is List<*> -> "sections=${value.size} items=${value.filterIsInstance<HomePageResponse>().sumOf { response -> response.items.sumOf { it.list.size } }}"
+                        else -> "result=success"
+                    }
+                    ProviderTrace.finish(id, detail)
+                }
+                is Resource.Failure -> ProviderTrace.failure(id,
+                    if (result.isNetworkError) "NetworkFailure" else "ProviderFailure")
+                else -> {
+                    ProviderTrace.note(id, stage, "result=${result.javaClass.simpleName}")
+                    ProviderTrace.finish(id)
+                }
             }
             result
         } catch (t: Throwable) {
@@ -118,7 +130,10 @@ class APIRepository(val api: MainAPI) {
                     found
                 }
 
-                if (cached != null) return@withTimeout cached
+                if (cached != null) {
+                    ProviderTrace.noteCurrent("METADATA_CACHE", "hit=true")
+                    return@withTimeout cached
+                }
                 api.load(fixedUrl)?.also { response ->
                     // Remove all blank tags as early as possible
                     response.tags = response.tags?.filter { it.isNotBlank() }
@@ -180,7 +195,7 @@ class APIRepository(val api: MainAPI) {
 
                 nameIndex?.let { api.mainPage.getOrNull(it) }?.let { data ->
                     listOf(
-                        ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page") {
+                        ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page index=${api.mainPage.indexOf(data)}") {
                             api.getMainPage(
                                 page,
                                 MainPageRequest(data.name, data.data, data.horizontalImages)
@@ -191,11 +206,13 @@ class APIRepository(val api: MainAPI) {
                     if (api.sequentialMainPage) {
                         var first = true
                         api.mainPage.map { data ->
-                            if (!first) // dont want to sleep on first request
+                            if (!first) { // dont want to sleep on first request
+                                ProviderTrace.noteCurrent("HOMEPAGE_QUEUE", "waitMs=${api.sequentialMainPageDelay}")
                                 delay(api.sequentialMainPageDelay)
+                            }
                             first = false
 
-                            ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page") {
+                            ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page index=${api.mainPage.indexOf(data)}") {
                                 api.getMainPage(
                                     page,
                                     MainPageRequest(data.name, data.data, data.horizontalImages)
@@ -206,7 +223,7 @@ class APIRepository(val api: MainAPI) {
                         with(CoroutineScope(coroutineContext)) {
                             api.mainPage.map { data ->
                                 async {
-                                    ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page") {
+                                    ProviderTrace.observe("HOMEPAGE_SECTION", api.name, "page=$page index=${api.mainPage.indexOf(data)}") {
                                         api.getMainPage(
                                             page,
                                             MainPageRequest(data.name, data.data, data.horizontalImages)
@@ -242,11 +259,20 @@ class APIRepository(val api: MainAPI) {
         val streams = java.util.concurrent.atomic.AtomicInteger()
         val subtitles = java.util.concurrent.atomic.AtomicInteger()
         return try {
-            val result = withTimeout(getTimeout(api.loadLinksTimeoutMs)) {
-                api.loadLinks(data, isCasting,
-                    { file -> subtitles.incrementAndGet(); subtitleCallback(file) },
-                    { link -> streams.incrementAndGet(); callback(link) }
-                )
+            val result = ProviderTrace.inOperation(op) {
+                withTimeout(getTimeout(api.loadLinksTimeoutMs)) {
+                    api.loadLinks(data, isCasting,
+                        { file ->
+                            subtitles.incrementAndGet()
+                            subtitleCallback(file)
+                        },
+                        { link ->
+                            val number = streams.incrementAndGet()
+                            ProviderTrace.note(op, "LINK_RECEIVED", "number=$number type=${link.type} quality=${link.quality}")
+                            callback(link)
+                        }
+                    )
+                }
             }
             val detail = "returned=$result streams=${streams.get()} subtitles=${subtitles.get()}"
             if (result && streams.get() > 0) ProviderTrace.finish(op, detail)

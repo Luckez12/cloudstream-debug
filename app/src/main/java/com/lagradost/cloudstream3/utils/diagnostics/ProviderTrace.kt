@@ -1,91 +1,148 @@
 package com.lagradost.cloudstream3.utils.diagnostics
 
+import android.os.Looper
 import android.os.SystemClock
+import com.lagradost.cloudstream3.HomePageResponse
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.asContextElement
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 
-/** Provider-level telemetry only; never reads or changes Android Logcat. */
+/** In-app provider trace. Does not read, write, or change CloudStream's Logcat UI. */
 object ProviderTrace {
     private const val MAX_ENTRIES = 2500
+    private const val MAX_OPERATIONS = 3200
+    private const val SLOW_MS = 5000L
+
+    private data class TraceContext(val session: Long, val op: Long, val provider: String)
+    private data class Pending(
+        val provider: String,
+        val stage: String,
+        val session: Long,
+        val since: Long,
+        val heapAtStart: Long
+    )
     private data class Entry(
         val at: String,
         val op: Long,
+        val session: Long,
         val level: String,
         val stage: String,
         val info: String,
         val section: String
     )
-    private data class Pending(val provider: String, val stage: String, val since: Long)
+
+    private val context = ThreadLocal<TraceContext?>()
     private val lock = Any()
     private val entries = ArrayDeque<Entry>()
     private val pending = linkedMapOf<Long, Pending>()
+    private val operationSessions = linkedMapOf<Long, Long>()
     private var counter = 0L
     private var dropped = 0L
+    private var ignoreThrough = 0L
 
-    /** Explicitly exclude URLs, headers and exception messages from stored details. */
-    private fun clean(value: String): String = value.replace(Regex("[^a-zA-Z0-9 _.=:+()/-]"), "_").take(120)
+    // Callers supply only structured, non-secret fields. Never log arbitrary exception text,
+    // request bodies, headers, full URLs, title strings or query parameters.
+    private fun clean(value: String): String =
+        value.replace(Regex("[^a-zA-Z0-9 _.=:+()/-]"), "_").take(140)
+
     private fun stamp(): String = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+    private fun heapMb(): Long = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1048576L
 
-    val sections: List<String> = listOf(
+    val sections = listOf(
         "Overview", "Homepage", "Search", "Metadata", "HTTP / Network",
         "Links / Extractor", "Player", "Other", "Full timeline"
     )
 
     private fun sectionOf(stage: String): String {
-        val upper = stage.uppercase(Locale.US)
+        val name = stage.uppercase(Locale.US)
         return when {
-            upper.startsWith("HOME") -> "Homepage"
-            upper.contains("SEARCH") -> "Search"
-            upper.contains("META") || upper.contains("DETAIL") -> "Metadata"
-            upper.contains("HTTP") || upper.contains("NETWORK") -> "HTTP / Network"
-            upper.contains("LINK") || upper.contains("EXTRACT") || upper.contains("SUBTITLE") -> "Links / Extractor"
-            upper.contains("PLAYER") || upper.contains("PLAYBACK") || upper.contains("FIRST_FRAME") || upper.contains("BUFFER") -> "Player"
+            name.startsWith("HOME") -> "Homepage"
+            name.contains("SEARCH") -> "Search"
+            name.contains("META") || name.contains("DETAIL") -> "Metadata"
+            name.contains("HTTP") || name.contains("NETWORK") -> "HTTP / Network"
+            name.contains("LINK") || name.contains("EXTRACT") || name.contains("SUBTITLE") -> "Links / Extractor"
+            name.contains("PLAYER") || name.contains("PLAYBACK") || name.contains("FIRST_FRAME") || name.contains("BUFFER") -> "Player"
             else -> "Other"
         }
     }
 
     private fun record(op: Long, level: String, stage: String, info: String) = synchronized(lock) {
+        if (op <= ignoreThrough) return@synchronized
         if (entries.size >= MAX_ENTRIES) { entries.removeFirst(); dropped++ }
-        // STACK lines inherit the operation's stage so a complete exception stays in one section.
         val owner = if (stage == "STACK") {
             pending[op]?.stage ?: entries.lastOrNull { it.op == op && it.stage != "STACK" }?.stage
-        } else {
-            null
-        }
-        entries.addLast(Entry(stamp(), op, level, stage, info, sectionOf(owner ?: stage)))
+        } else null
+        entries.addLast(Entry(stamp(), op, operationSessions[op] ?: op, level,
+            stage, clean(info), sectionOf(owner ?: stage)))
     }
 
     fun begin(stage: String, provider: String, details: String = ""): Long = synchronized(lock) {
         val id = ++counter
-        pending[id] = Pending(clean(provider), clean(stage), SystemClock.elapsedRealtime())
-        val actor = if (stage == "HTTP") "host" else "provider"
-        record(id, "START", clean(stage), "$actor=${clean(provider)} ${clean(details)}")
+        val session = context.get()?.session ?: id
+        val safeStage = clean(stage)
+        val safeProvider = clean(provider)
+        pending[id] = Pending(safeProvider, safeStage, session, SystemClock.elapsedRealtime(), heapMb())
+        operationSessions[id] = session
+        while (operationSessions.size > MAX_OPERATIONS) operationSessions.remove(operationSessions.keys.first())
+        val actor = if (safeStage == "HTTP") "host" else "provider"
+        record(id, "START", safeStage, "$actor=$safeProvider ${clean(details)} thread=${clean(Thread.currentThread().name)} main=${Looper.myLooper() == Looper.getMainLooper()}")
         id
     }
 
+    /** Propagate the operation ID across coroutine dispatcher switches and nested homepage jobs. */
+    suspend fun <T> inOperation(op: Long, action: suspend () -> T): T {
+        val ctx = synchronized(lock) {
+            pending[op]?.let { TraceContext(it.session, op, it.provider) }
+        } ?: return action()
+        return withContext(context.asContextElement(ctx)) { action() }
+    }
+
+    /** A request lacking this context must not be attributed to an arbitrary provider. */
+    fun hasOperationContext(): Boolean = context.get() != null
+
     fun note(op: Long, stage: String, details: String) {
-        record(op, "INFO", clean(stage), clean(details))
+        record(op, "INFO", clean(stage), details)
+    }
+
+    fun noteCurrent(stage: String, details: String) {
+        context.get()?.op?.let { note(it, stage, details) }
     }
 
     fun finish(op: Long, details: String = "") = synchronized(lock) {
         val item = pending.remove(op) ?: return@synchronized
         val elapsed = SystemClock.elapsedRealtime() - item.since
         val actor = if (item.stage == "HTTP") "host" else "provider"
-        record(op, "PASS", item.stage, "$actor=${item.provider} elapsed=${elapsed}ms ${clean(details)}")
-        if (elapsed >= 5000) record(op, "SLOW", item.stage, "elapsed=${elapsed}ms")
+        record(op, "PASS", item.stage,
+            "$actor=${item.provider} elapsed=${elapsed}ms heapDelta=${heapMb() - item.heapAtStart}MB ${clean(details)}")
+        if (elapsed >= SLOW_MS) record(op, "SLOW", item.stage, "elapsed=${elapsed}ms")
+    }
+
+    /** An HTTP 4xx/5xx attempt may be recovered by the extension. Don't mark the provider failed. */
+    fun httpWarning(op: Long, code: Int, details: String = "") = synchronized(lock) {
+        val item = pending.remove(op) ?: return@synchronized
+        record(op, "WARN", "HTTP", "host=${item.provider} status=$code elapsed=${SystemClock.elapsedRealtime() - item.since}ms ${clean(details)}")
     }
 
     fun failure(op: Long, type: String, details: String = "") = synchronized(lock) {
         val item = pending.remove(op)
         val elapsed = item?.let { SystemClock.elapsedRealtime() - it.since } ?: 0L
         val actor = if (item?.stage == "HTTP") "host" else "provider"
-        record(op, "FAIL", item?.stage ?: "REQUEST", "$actor=${item?.provider ?: "unknown"} type=${clean(type)} elapsed=${elapsed}ms ${clean(details)}")
+        record(op, "FAIL", item?.stage ?: "REQUEST",
+            "$actor=${item?.provider ?: "unknown"} type=${clean(type)} elapsed=${elapsed}ms ${clean(details)}")
     }
 
-    /** Avoid Throwable.message: it may contain a credential-bearing URL. */
+    fun cancelled(op: Long) = synchronized(lock) {
+        val item = pending.remove(op) ?: return@synchronized
+        record(op, "CANCEL", item.stage, "provider=${item.provider} elapsed=${SystemClock.elapsedRealtime() - item.since}ms")
+    }
+
+    /** Throwable.message can contain a signed URL or credential, so retain class + safe frames. */
     fun exception(op: Long, cause: Throwable) {
+        if (cause is CancellationException) { cancelled(op); return }
         failure(op, cause.javaClass.simpleName.ifBlank { "Throwable" })
         var t: Throwable? = cause
         var depth = 0
@@ -103,7 +160,15 @@ object ProviderTrace {
     suspend fun <T> observe(stage: String, provider: String, details: String = "", action: suspend () -> T): T {
         val op = begin(stage, provider, details)
         return try {
-            val result = action()
+            val result = inOperation(op) { action() }
+            if (stage == "HOMEPAGE_SECTION") {
+                if (result is HomePageResponse) {
+                    note(op, "HOMEPAGE_RESULT",
+                        "groups=${result.items.size} items=${result.items.sumOf { it.list.size }}")
+                } else if (result == null) {
+                    note(op, "HOMEPAGE_RESULT", "empty=true")
+                }
+            }
             finish(op)
             result
         } catch (t: Throwable) {
@@ -113,61 +178,60 @@ object ProviderTrace {
     }
 
     fun clear() = synchronized(lock) {
-        entries.clear(); pending.clear(); dropped = 0L
+        entries.clear(); pending.clear(); operationSessions.clear(); dropped = 0L
+        // Prevent an old in-flight operation from repopulating a freshly cleared report.
+        ignoreThrough = counter
     }
 
-    /** A subsection never guesses that an unrelated HTTP request belongs to a given provider. */
+    /** Keep the UI unchanged; the text below is the only output the UI consumes. */
     fun report(section: String, importantOnly: Boolean): String = synchronized(lock) {
         val now = SystemClock.elapsedRealtime()
-        val matchingEntries = entries.filter { section == "Overview" || section == "Full timeline" || it.section == section }
-        val matchingPending = pending.filterValues { section == "Overview" || section == "Full timeline" || sectionOf(it.stage) == section }
+        val selected = entries.filter {
+            section == "Overview" || section == "Full timeline" || it.section == section
+        }
+        val active = pending.filterValues {
+            section == "Overview" || section == "Full timeline" || sectionOf(it.stage) == section
+        }
         buildString {
             appendLine("CLOUDSTREAM PROVIDER DIAGNOSTIC — ${if (importantOnly) "IMPORTANT" else "FULL TRACE"}")
-            appendLine("Section: $section | events: ${matchingEntries.size} | active: ${matchingPending.size} | discarded: $dropped")
-            appendLine("Provider HTTP events are shared-client requests; host is NOT the provider name.")
-            appendLine("Extension-owned HTTP clients or steps without instrumentation are not visible.")
-            appendLine("No URL paths, queries, headers, cookies, tokens or raw exception messages stored.")
-            if (matchingPending.isNotEmpty()) {
+            appendLine("Section: $section | events: ${selected.size} | active: ${active.size} | discarded: $dropped")
+            if (active.isNotEmpty()) {
                 appendLine()
                 appendLine("IN PROGRESS")
-                matchingPending.forEach { (id, task) ->
+                active.forEach { (id, task) ->
                     val elapsed = now - task.since
-                    val actor = if (task.stage == "HTTP") "host" else "provider"
-                    appendLine("#$id ${task.stage} $actor=${task.provider} waiting=${elapsed}ms${if (elapsed >= 5000) " [SLOW]" else ""}")
+                    appendLine("session=${task.session} #$id ${task.stage} provider=${task.provider} waiting=${elapsed}ms${if (elapsed >= SLOW_MS) " [SLOW]" else ""}")
                 }
             }
             if (importantOnly) {
+                val significant = selected.filter { it.level == "FAIL" || it.level == "SLOW" }
                 appendLine()
                 appendLine("FAILURES / SLOW STAGES")
-                val important = matchingEntries.filter { it.level == "FAIL" || it.level == "SLOW" }
-                if (important.isEmpty()) appendLine("No failed or slow stages recorded in this section.")
-                important.takeLast(80).forEachIndexed { index, e ->
-                    if (index > 0) appendLine()
-                    appendLine("${e.at} #${e.op} ${e.level} ${e.stage} ${e.info}")
+                if (significant.isEmpty()) appendLine("No failed or slow stages recorded in this section.")
+                significant.takeLast(80).forEach { e ->
+                    appendLine("${e.at} session=${e.session} #${e.op} ${e.level} ${e.stage} ${e.info}")
                 }
-                appendLine("Open Full trace for the events preceding a failure and its stack trace.")
+                // HTTP WARNs are attempts, not necessarily final provider failures.
+                if (selected.any { it.level == "WARN" }) appendLine("HTTP warnings may have recovered; check Full trace for retries.")
             } else {
                 val categories = if (section == "Overview") sections.subList(1, 8) else listOf(section)
                 categories.forEach { category ->
-                    val current = if (section == "Full timeline") matchingEntries else matchingEntries.filter { it.section == category }
+                    val current = if (section == "Full timeline") selected else selected.filter { it.section == category }
                     if (current.isNotEmpty() || section != "Overview") {
                         appendLine()
                         appendLine("=== ${category.uppercase(Locale.US)} (${current.size}) ===")
                         if (current.isEmpty()) appendLine("No events recorded.")
                         current.forEachIndexed { index, e ->
-                            // Keep consecutive STACK frames attached to their error;
-                            // separate normal events so a long trace is readable.
                             if (index > 0 && e.stage != "STACK") appendLine()
-                            appendLine("${e.at} #${e.op} ${e.level} ${e.stage} ${e.info}")
+                            appendLine("${e.at} session=${e.session} #${e.op} ${e.level} ${e.stage} ${e.info}")
                         }
                     }
                 }
-                if (matchingEntries.isEmpty() && section == "Overview") appendLine("No events recorded yet.")
+                if (selected.isEmpty() && section == "Overview") appendLine("No events recorded yet.")
             }
         }
     }
 
-    // Preserve compatibility with any existing callers.
     fun important(): String = report("Overview", true)
     fun full(): String = report("Full timeline", false)
 }
